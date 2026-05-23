@@ -1,5 +1,6 @@
 import pygame
 import sys
+from player import Player
 
 # --- CONSTANTS ---
 SCREEN_WIDTH = 960
@@ -9,7 +10,6 @@ TITLE = "Starlight's Edge"
 
 # --- COLORS ---
 BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
 
 def main():
     # Initialize Pygame
@@ -22,6 +22,9 @@ def main():
     # Create the clock (controls game speed)
     clock = pygame.time.Clock()
 
+    # Create the player (starting in the center of the screen)
+    player = Player(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+
     # --- MAIN LOOP ---
     running = True
     while running:
@@ -32,10 +35,11 @@ def main():
                 running = False
 
         # 2. UPDATE GAME STATE
-        # (nothing to update yet)
+        player.handle_input()
 
         # 3. DRAW EVERYTHING
         screen.fill(BLACK)
+        player.draw(screen)
 
         # Flip the display
         pygame.display.flip()
