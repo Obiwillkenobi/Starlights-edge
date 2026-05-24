@@ -2,6 +2,7 @@ import pygame
 import sys
 from player import Player
 from camera import Camera
+from enemy import Enemy
 
 # --- CONSTANTS ---
 SCREEN_WIDTH = 960
@@ -11,11 +12,9 @@ TITLE = "Starlight's Edge"
 
 # --- COLORS ---
 BLACK = (0, 0, 0)
-DARK_GRAY = (30, 30, 30)
 GRID_COLOR = (50, 50, 50)
 
 def draw_grid(screen, camera):
-    # Draws a grid so we can SEE the camera moving
     grid_size = 64
     for x in range(0, 3000, grid_size):
         for y in range(0, 3000, grid_size):
@@ -27,18 +26,20 @@ def main():
     # Initialize Pygame
     pygame.init()
 
-    # Create the window
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption(TITLE)
-
-    # Create the clock
     clock = pygame.time.Clock()
 
-    # Create the player (starting in the center of the world)
+    # Create player and camera
     player = Player(1500, 1500)
-
-    # Create the camera
     camera = Camera(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    # Spawn a few test enemies near the player
+    enemies = [
+        Enemy(1600, 1500),
+        Enemy(1400, 1450),
+        Enemy(1550, 1600),
+    ]
 
     # --- MAIN LOOP ---
     running = True
@@ -51,17 +52,35 @@ def main():
 
         # 2. UPDATE GAME STATE
         player.handle_input()
+        player.update()
         camera.update(player)
+
+        # Update enemies
+        for enemy in enemies:
+            enemy.check_hits(player)
+
+        # Remove dead enemies
+        enemies = [e for e in enemies if e.active]
 
         # 3. DRAW EVERYTHING
         screen.fill(BLACK)
         draw_grid(screen, camera)
 
-        # Draw player through the camera
-        player_draw_rect = camera.apply(player.rect)
-        pygame.draw.rect(screen, (0, 200, 255), player_draw_rect)
+        # Draw enemies
+        for enemy in enemies:
+            enemy.draw(screen, camera)
 
-        # Flip the display
+        # Draw player on top
+        player.draw(screen, camera)
+
+        # Display controls hint
+        font = pygame.font.SysFont(None, 28)
+        hint = font.render(
+            "WASD: Move  |  J: Sword  |  K: Projectile",
+            True, (180, 180, 180)
+        )
+        screen.blit(hint, (10, 10))
+
         pygame.display.flip()
         clock.tick(FPS)
 
