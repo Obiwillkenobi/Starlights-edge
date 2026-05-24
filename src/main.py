@@ -13,6 +13,8 @@ TITLE = "Starlight's Edge"
 # --- COLORS ---
 BLACK = (0, 0, 0)
 GRID_COLOR = (50, 50, 50)
+WHITE = (255, 255, 255)
+RED = (200, 50, 50)
 
 def draw_grid(screen, camera):
     grid_size = 64
@@ -34,12 +36,17 @@ def main():
     player = Player(1500, 1500)
     camera = Camera(SCREEN_WIDTH, SCREEN_HEIGHT)
 
-    # Spawn a few test enemies near the player
+    # Spawn test enemies
     enemies = [
-        Enemy(1600, 1500),
+        Enemy(1700, 1500),
         Enemy(1400, 1450),
-        Enemy(1550, 1600),
+        Enemy(1550, 1700),
+        Enemy(1800, 1600),
+        Enemy(1300, 1600),
     ]
+
+    font = pygame.font.SysFont(None, 28)
+    big_font = pygame.font.SysFont(None, 72)
 
     # --- MAIN LOOP ---
     running = True
@@ -49,37 +56,65 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r and not player.alive:
+                    # Restart the game
+                    player = Player(1500, 1500)
+                    enemies = [
+                        Enemy(1700, 1500),
+                        Enemy(1400, 1450),
+                        Enemy(1550, 1700),
+                        Enemy(1800, 1600),
+                        Enemy(1300, 1600),
+                    ]
 
         # 2. UPDATE GAME STATE
-        player.handle_input()
-        player.update()
-        camera.update(player)
+        if player.alive:
+            player.handle_input()
+            player.update()
+            camera.update(player)
 
-        # Update enemies
-        for enemy in enemies:
-            enemy.check_hits(player)
+            for enemy in enemies:
+                enemy.update(player)
+                enemy.check_hits(player)
 
-        # Remove dead enemies
-        enemies = [e for e in enemies if e.active]
+            enemies = [e for e in enemies if e.active]
 
         # 3. DRAW EVERYTHING
         screen.fill(BLACK)
         draw_grid(screen, camera)
 
-        # Draw enemies
         for enemy in enemies:
             enemy.draw(screen, camera)
 
-        # Draw player on top
         player.draw(screen, camera)
+        player.draw_hud(screen)
 
-        # Display controls hint
-        font = pygame.font.SysFont(None, 28)
+        # Controls hint
         hint = font.render(
-            "WASD: Move  |  J: Sword  |  K: Projectile",
+            "WASD: Move  |  J: Sword  |  K: Projectile  |  R: Restart",
             True, (180, 180, 180)
         )
-        screen.blit(hint, (10, 10))
+        screen.blit(hint, (10, SCREEN_HEIGHT - 30))
+
+        # Enemy counter
+        counter = font.render(
+            f"Enemies remaining: {len(enemies)}",
+            True, (255, 255, 255)
+        )
+        screen.blit(counter, (SCREEN_WIDTH - 220, 20))
+
+        # Game over screen
+        if not player.alive:
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))
+            screen.blit(overlay, (0, 0))
+            game_over = big_font.render("YOU DIED", True, RED)
+            restart = font.render("Press R to restart", True, WHITE)
+            screen.blit(game_over, (SCREEN_WIDTH // 2 - game_over.get_width() // 2,
+                SCREEN_HEIGHT // 2 - 60))
+            screen.blit(restart, (SCREEN_WIDTH // 2 - restart.get_width() // 2,
+                SCREEN_HEIGHT // 2 + 20))
 
         pygame.display.flip()
         clock.tick(FPS)
