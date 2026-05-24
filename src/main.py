@@ -5,7 +5,7 @@ from player import Player
 from camera import Camera
 from enemy import Enemy
 from floor import Floor
-from collision import get_wall_rects
+from collision import get_wall_rects, get_all_walls
 
 # --- CONSTANTS ---
 SCREEN_WIDTH = 960
@@ -36,19 +36,17 @@ def spawn_enemies(floor):
             continue
         cx, cy = room.get_center()
         for _ in range(3):
-            ex = cx + random.randint(-100, 100)
-            ey = cy + random.randint(-100, 100)
-            room.enemies.append(Enemy(ex, ey))
+            ex = cx + random.randint(-80, 80)
+            ey = cy + random.randint(-80, 80)
+            room.enemies.append(Enemy(ex, ey, room=room))
 
 def main():
-    # Initialize Pygame
     pygame.init()
 
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption(TITLE)
     clock = pygame.time.Clock()
 
-    # Generate the first floor
     floor = Floor(floor_number=1)
     start_room = floor.get_current_room()
     start_x, start_y = start_room.get_center()
@@ -59,7 +57,6 @@ def main():
     font = pygame.font.SysFont(None, 28)
     big_font = pygame.font.SysFont(None, 72)
 
-    # --- MAIN LOOP ---
     running = True
     while running:
 
@@ -81,14 +78,13 @@ def main():
             player.update()
             camera.update(player)
 
-            # Get current room and its walls
             current_room = get_current_room(floor, player)
-            walls = get_wall_rects(current_room)
+            nearby_corridors = floor.get_nearby_corridors(player)
+            walls = get_all_walls(current_room, nearby_corridors)
 
-            # Pass walls to player and enemies
             player.walls = walls
             for enemy in current_room.enemies:
-                enemy.walls = walls
+                enemy.walls = get_wall_rects(current_room)
                 enemy.update(player)
                 enemy.check_hits(player)
             current_room.enemies = [
@@ -99,7 +95,6 @@ def main():
         screen.fill(BLACK)
         floor.draw(screen, camera)
 
-        # Draw enemies in nearby rooms
         for room in floor.rooms:
             room_rect = pygame.Rect(
                 room.x, room.y,
@@ -119,27 +114,23 @@ def main():
         player.draw_hud(screen)
         floor.draw_minimap(screen)
 
-        # FPS counter
         fps = int(clock.get_fps())
         fps_color = (50, 200, 50) if fps >= 50 else (200, 50, 50)
         fps_text = font.render(f"FPS: {fps}", True, fps_color)
         screen.blit(fps_text, (SCREEN_WIDTH - 80, 20))
 
-        # Floor indicator
         floor_text = font.render(
             f"Floor: {floor.floor_number}  |  Rooms: {len(floor.rooms)}",
             True, WHITE
         )
         screen.blit(floor_text, (10, SCREEN_HEIGHT - 30))
 
-        # Controls hint
         hint = font.render(
             "WASD: Move  |  J: Sword  |  K: Projectile  |  R: Restart",
             True, (180, 180, 180)
         )
         screen.blit(hint, (10, SCREEN_HEIGHT - 55))
 
-        # Game over screen
         if not player.alive:
             overlay = pygame.Surface(
                 (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA

@@ -10,7 +10,7 @@ ENEMY_PATROL_COLOR = (180, 50, 50)
 ENEMY_MAX_HEALTH = 3
 ENEMY_SPEED = 2
 ENEMY_CHASE_SPEED = 3
-ENEMY_DETECT_RANGE = 200
+ENEMY_DETECT_RANGE = 250
 ENEMY_ATTACK_RANGE = 40
 ENEMY_ATTACK_COOLDOWN = 60
 ENEMY_DAMAGE = 1
@@ -21,7 +21,7 @@ CHASING = "chasing"
 ATTACKING = "attacking"
 
 class Enemy:
-    def __init__(self, x, y):
+    def __init__(self, x, y, room=None):
         self.rect = pygame.Rect(x, y, ENEMY_SIZE, ENEMY_SIZE)
         self.health = ENEMY_MAX_HEALTH
         self.active = True
@@ -32,10 +32,36 @@ class Enemy:
         self.patrol_dy = random.choice([-1, 0, 1])
         self.walls = []
 
+        # Lock enemy to its home room boundaries
+        self.home_room = room
+        if room:
+            from room import TILE_SIZE
+            # Keep enemies inside the floor area (not walls)
+            self.bounds = pygame.Rect(
+                room.x + TILE_SIZE,
+                room.y + TILE_SIZE,
+                room.get_pixel_width() - TILE_SIZE * 2,
+                room.get_pixel_height() - TILE_SIZE * 2
+            )
+        else:
+            self.bounds = None
+
     def get_distance(self, player):
         dx = player.rect.centerx - self.rect.centerx
         dy = player.rect.centery - self.rect.centery
         return math.sqrt(dx * dx + dy * dy)
+
+    def clamp_to_bounds(self):
+        # Keep enemy inside its home room
+        if self.bounds:
+            if self.rect.left < self.bounds.left:
+                self.rect.left = self.bounds.left
+            if self.rect.right > self.bounds.right:
+                self.rect.right = self.bounds.right
+            if self.rect.top < self.bounds.top:
+                self.rect.top = self.bounds.top
+            if self.rect.bottom > self.bounds.bottom:
+                self.rect.bottom = self.bounds.bottom
 
     def update(self, player):
         if not self.active:
@@ -62,6 +88,7 @@ class Enemy:
             self.rect = resolve_collision(self.rect, self.walls)
             self.rect.y += self.patrol_dy * ENEMY_SPEED
             self.rect = resolve_collision(self.rect, self.walls)
+            self.clamp_to_bounds()
 
         elif self.state == CHASING:
             dx = player.rect.centerx - self.rect.centerx
@@ -71,6 +98,7 @@ class Enemy:
             self.rect = resolve_collision(self.rect, self.walls)
             self.rect.y += int((dy / dist) * ENEMY_CHASE_SPEED)
             self.rect = resolve_collision(self.rect, self.walls)
+            self.clamp_to_bounds()
 
         elif self.state == ATTACKING:
             if self.attack_timer == 0:
