@@ -1,238 +1,343 @@
 import pygame
 import random
 from room import Room, Tile, TILE_SIZE
+from waypoints import (WaypointRoom, WaypointScheduler,
+    STAIRCASE, LIBRARY, ARMORY, DOJO,
+    RESCUE, STORE, KITCHEN, KENNELS)
 
-# --- CONSTANTS ---
-ROOM_SPACING_X = 1200
-ROOM_SPACING_Y = 900
-MIN_ROOMS = 8
-MAX_ROOMS = 12
-CORRIDOR_WIDTH = 3  # Width in tiles
+GRID_CELL_W = 900
+GRID_CELL_H = 700
 
-# --- COLORS ---
-CORRIDOR_COLOR = (60, 60, 80)
-CORRIDOR_LINE_COLOR = (50, 50, 70)
+_scheduler = None
 
-class Corridor:
-    def __init__(self, x, y, width, height):
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-        self.surface = None
-        self.build_surface()
+def get_scheduler():
+    global _scheduler
+    if _scheduler is None:
+        _scheduler = WaypointScheduler()
+    return _scheduler
 
-    def build_surface(self):
-        self.surface = pygame.Surface((self.width, self.height))
-        self.surface.fill(CORRIDOR_COLOR)
-        pygame.draw.rect(self.surface, CORRIDOR_LINE_COLOR,
-            (0, 0, self.width, self.height), 1)
+def reset_scheduler():
+    global _scheduler
+    _scheduler = None
 
-    def get_rect(self):
-        return pygame.Rect(self.x, self.y, self.width, self.height)
-
-    def draw(self, screen, camera):
-        draw_pos = camera.apply(
-            pygame.Rect(self.x, self.y, self.width, self.height)
-        )
-        screen.blit(self.surface, (draw_pos.x, draw_pos.y))
+def rooms_for_floor(floor_number):
+    base     = 7
+    extra    = int((floor_number - 1) * (22 - 7) / 11)
+    variance = random.randint(-1, 2)
+    return max(5, base + extra + variance)
 
 
 class Floor:
     def __init__(self, floor_number=1):
-        self.floor_number = floor_number
-        self.rooms = []
-        self.corridors = []
+        self.floor_number       = floor_number
+        self.rooms              = []
+        self.waypoint_rooms     = []
         self.current_room_index = 0
+        self.staircase_reached  = False
+        self.discovered_rooms   = {0}
+        self.room_grid          = {}   # id(room) -> (gx, gy)
+        self.grid_to_room       = {}   # (gx, gy) -> room
+        # connections: id(room) -> {direction: neighbor_room}
+        self.connections        = {}
         self.generate()
 
+    # ── helpers ───────────────────────────────────────────────────────
+    def room_pixel_origin(self, room, gx, gy):
+        cx = 2000 + gx * GRID_CELL_W + GRID_CELL_W // 2
+        cy = 2000 + gy * GRID_CELL_H + GRID_CELL_H // 2
+        return (cx - room.get_pixel_width()  // 2,
+                cy - room.get_pixel_height() // 2)
+
+    def find_farthest_grid(self, start=(0, 0)):
+        from collections import deque
+        visited  = {start: 0}
+        queue    = deque([start])
+        farthest = start
+        max_dist = 0
+        offsets  = [(0,-1),(0,1),(1,0),(-1,0)]
+        while queue:
+            pos  = queue.popleft()
+            dist = visited[pos]
+            if dist > max_dist:
+                max_dist = dist
+                farthest = pos
+            for dx, dy in offsets:
+                nb = (pos[0]+dx, pos[1]+dy)
+                if nb in self.grid_to_room and nb not in visited:
+                    visited[nb] = dist + 1
+                    queue.append(nb)
+        return farthest
+
+    def connect(self, room_a, direction, room_b):
+        """Record a directional connection and add doors."""
+        opp = {"north":"south","south":"north",
+               "east":"west",  "west":"east"}
+        room_a.doors[direction]    = True
+        room_b.doors[opp[direction]] = True
+        room_a.add_doors()
+        room_b.add_doors()
+        self.connections.setdefault(id(room_a), {})[direction]        = room_b
+        self.connections.setdefault(id(room_b), {})[opp[direction]]   = room_a
+
+    def place_room(self, room, gx, gy):
+        px, py = self.room_pixel_origin(room, gx, gy)
+        room.x, room.y = px, py
+        self.rooms.append(room)
+        self.room_grid[id(room)]    = (gx, gy)
+        self.grid_to_room[(gx, gy)] = room
+        self.connections[id(room)]  = {}
+
+    # ── generation ────────────────────────────────────────────────────
     def generate(self):
-        self.rooms = []
-        self.corridors = []
+        self.rooms            = []
+        self.waypoint_rooms   = []
+        self.discovered_rooms = {0}
+        self.room_grid        = {}
+        self.grid_to_room     = {}
+        self.connections      = {}
 
-        start_x = 2000
-        start_y = 2000
-        start_room = Room(start_x, start_y)
-        self.rooms.append(start_room)
+        offsets  = {"north":(0,-1),"south":(0,1),
+                    "east":(1,0),  "west":(-1,0)}
+        opposite = {"north":"south","south":"north",
+                    "east":"west",  "west":"east"}
 
-        occupied = {(0, 0): start_room}
+        # Starting room
+        start_room = Room(0, 0)
+        self.place_room(start_room, 0, 0)
         frontier = [(0, 0)]
 
-        num_rooms = random.randint(MIN_ROOMS, MAX_ROOMS)
-
+        # Grow random rooms
+        target   = rooms_for_floor(self.floor_number)
         attempts = 0
-        while len(self.rooms) < num_rooms and attempts < 100:
-            attempts += 1
-
-            grid_pos = random.choice(frontier)
-            parent_room = occupied[grid_pos]
-
-            direction = random.choice(["north", "south", "east", "west"])
-            offsets = {
-                "north": (0, -1),
-                "south": (0, 1),
-                "east":  (1, 0),
-                "west":  (-1, 0)
-            }
-            opposite = {
-                "north": "south",
-                "south": "north",
-                "east":  "west",
-                "west":  "east"
-            }
-
-            dx, dy = offsets[direction]
-            new_grid = (grid_pos[0] + dx, grid_pos[1] + dy)
-
-            if new_grid in occupied:
+        while len(self.rooms) < target and attempts < 500:
+            attempts  += 1
+            grid_pos   = random.choice(frontier)
+            direction  = random.choice(list(offsets.keys()))
+            dx, dy     = offsets[direction]
+            new_grid   = (grid_pos[0]+dx, grid_pos[1]+dy)
+            if new_grid in self.grid_to_room:
                 continue
-
-            new_x = start_x + new_grid[0] * ROOM_SPACING_X
-            new_y = start_y + new_grid[1] * ROOM_SPACING_Y
-
-            new_room = Room(new_x, new_y)
-
-            parent_room.doors[direction] = True
-            new_room.doors[opposite[direction]] = True
-            parent_room.add_doors()
-            new_room.add_doors()
-
-            # Build corridor aligned to door positions
-            corridor = self.build_corridor(
-                parent_room, new_room, direction
-            )
-            if corridor:
-                self.corridors.append(corridor)
-
-            self.rooms.append(new_room)
-            occupied[new_grid] = new_room
+            new_room = Room(0, 0)
+            self.place_room(new_room, *new_grid)
+            self.connect(self.grid_to_room[grid_pos], direction, new_room)
             frontier.append(new_grid)
+
+        # Place staircase at farthest point
+        farthest = self.find_farthest_grid()
+        stair_grid = None
+        stair_dir  = None
+        for direction, (dx, dy) in offsets.items():
+            candidate = (farthest[0]+dx, farthest[1]+dy)
+            if candidate not in self.grid_to_room:
+                stair_grid = candidate
+                stair_dir  = direction
+                break
+
+        if stair_grid:
+            stair_room = WaypointRoom(0, 0, STAIRCASE)
+            self.place_room(stair_room, *stair_grid)
+            self.waypoint_rooms.append(stair_room)
+            self.connect(
+                self.grid_to_room[farthest],
+                stair_dir, stair_room)
+        else:
+            # All neighbors occupied — convert farthest room to staircase
+            existing = self.grid_to_room[farthest]
+            idx = self.rooms.index(existing)
+            stair_room = WaypointRoom(existing.x, existing.y, STAIRCASE)
+            stair_room.doors = existing.doors.copy()
+            stair_room.tiles = existing.tiles
+            stair_room.surface = None
+            self.rooms[idx] = stair_room
+            self.waypoint_rooms.append(stair_room)
+            self.room_grid[id(stair_room)] = farthest
+            self.grid_to_room[farthest]    = stair_room
+            self.connections[id(stair_room)] = self.connections.pop(id(existing))
+            for room in self.rooms:
+                for d, nb in self.connections.get(id(room), {}).items():
+                    if nb is existing:
+                        self.connections[id(room)][d] = stair_room
+
+        # Place other waypoints
+        scheduler      = get_scheduler()
+        waypoint_types = scheduler.get_waypoints_for_floor(self.floor_number)
+        non_stair      = [w for w in waypoint_types if w != STAIRCASE]
+
+        wp_positions = [
+            (2,0),(-2,0),(0,2),(0,-2),
+            (3,0),(-3,0),(0,3),(0,-3)
+        ]
+
+        for i, wtype in enumerate(non_stair):
+            if i >= len(wp_positions):
+                break
+            gx, gy = wp_positions[i]
+            if (gx, gy) in self.grid_to_room:
+                found = False
+                for d, (ddx, ddy) in offsets.items():
+                    alt = (gx+ddx, gy+ddy)
+                    if alt not in self.grid_to_room:
+                        gx, gy = alt
+                        found  = True
+                        break
+                if not found:
+                    continue
+            wroom = WaypointRoom(0, 0, wtype)
+            self.place_room(wroom, gx, gy)
+            self.waypoint_rooms.append(wroom)
+            # Connect to nearest neighbor
+            for direction, (ddx, ddy) in offsets.items():
+                ngrid = (gx-ddx, gy-ddy)
+                if ngrid in self.grid_to_room:
+                    self.connect(
+                        self.grid_to_room[ngrid],
+                        direction, wroom)
+                    break
 
         self.current_room_index = 0
 
-    def get_door_position(self, room, direction):
-        # Returns the world pixel position of the door center
-        mid_col = room.width // 2
+    # ── door transition helpers ───────────────────────────────────────
+    def get_door_rect(self, room, direction):
+        """
+        Returns the pixel rect of the door opening on the given wall.
+        Used to detect when the player walks through a door.
+        """
+        cp      = 3 * TILE_SIZE   # 3-tile wide opening
+        mid_col = room.width  // 2
         mid_row = room.height // 2
-        corridor_pixels = CORRIDOR_WIDTH * TILE_SIZE
 
+        if direction == "north":
+            return pygame.Rect(
+                room.x + (mid_col - 1) * TILE_SIZE,
+                room.y,
+                cp, TILE_SIZE)
+        if direction == "south":
+            return pygame.Rect(
+                room.x + (mid_col - 1) * TILE_SIZE,
+                room.y + room.get_pixel_height() - TILE_SIZE,
+                cp, TILE_SIZE)
+        if direction == "west":
+            return pygame.Rect(
+                room.x,
+                room.y + (mid_row - 1) * TILE_SIZE,
+                TILE_SIZE, cp)
         if direction == "east":
-            x = room.x + room.get_pixel_width()
-            y = room.y + mid_row * TILE_SIZE - corridor_pixels // 2
-            return x, y
-        elif direction == "west":
-            x = room.x
-            y = room.y + mid_row * TILE_SIZE - corridor_pixels // 2
-            return x, y
-        elif direction == "south":
-            x = room.x + mid_col * TILE_SIZE - corridor_pixels // 2
-            y = room.y + room.get_pixel_height()
-            return x, y
-        elif direction == "north":
-            x = room.x + mid_col * TILE_SIZE - corridor_pixels // 2
-            y = room.y
-            return x, y
+            return pygame.Rect(
+                room.x + room.get_pixel_width() - TILE_SIZE,
+                room.y + (mid_row - 1) * TILE_SIZE,
+                TILE_SIZE, cp)
 
-    def build_corridor(self, room_a, room_b, direction):
-        corridor_pixels = CORRIDOR_WIDTH * TILE_SIZE
-        ax, ay = self.get_door_position(room_a, direction)
+    def get_spawn_point(self, room, entry_direction):
+        """
+        Returns where the player should appear when entering a room
+        from entry_direction. Places them just inside the door.
+        """
+        cp      = 3 * TILE_SIZE
+        mid_col = room.width  // 2
+        mid_row = room.height // 2
+        pad     = TILE_SIZE * 2
 
-        opposite = {
-            "north": "south",
-            "south": "north",
-            "east": "west",
-            "west": "east"
-        }
-        bx, by = self.get_door_position(room_b, opposite[direction])
+        if entry_direction == "south":   # came from north, enter south wall
+            return (room.x + mid_col * TILE_SIZE,
+                    room.y + room.get_pixel_height() - pad)
+        if entry_direction == "north":
+            return (room.x + mid_col * TILE_SIZE,
+                    room.y + pad)
+        if entry_direction == "east":
+            return (room.x + room.get_pixel_width() - pad,
+                    room.y + mid_row * TILE_SIZE)
+        if entry_direction == "west":
+            return (room.x + pad,
+                    room.y + mid_row * TILE_SIZE)
 
-        if direction == "east":
-            width = bx - ax
-            height = corridor_pixels
-            if width > 0:
-                return Corridor(ax, ay, width, height)
+    def check_door_transition(self, player):
+        """
+        Check if the player has walked through any door in the
+        current room. Returns (neighbor_room, entry_direction) or
+        (None, None).
+        """
+        current_room = self.get_current_room()
+        room_connections = self.connections.get(id(current_room), {})
 
-        elif direction == "west":
-            width = ax - bx
-            height = corridor_pixels
-            if width > 0:
-                return Corridor(bx, by, width, height)
+        for direction, neighbor in room_connections.items():
+            door_rect = self.get_door_rect(current_room, direction)
+            if door_rect and player.rect.colliderect(door_rect):
+                opp = {"north":"south","south":"north",
+                       "east":"west",  "west":"east"}
+                return neighbor, opp[direction]
 
-        elif direction == "south":
-            width = corridor_pixels
-            height = by - ay
-            if height > 0:
-                return Corridor(ax, ay, width, height)
+        return None, None
 
-        elif direction == "north":
-            width = corridor_pixels
-            height = ay - by
-            if height > 0:
-                return Corridor(bx, by, width, height)
-
-        return None
-
+    # ── runtime ───────────────────────────────────────────────────────
     def get_current_room(self):
         return self.rooms[self.current_room_index]
 
     def get_nearby_corridors(self, player):
-        # Returns corridors close to the player
-        nearby = []
-        for corridor in self.corridors:
-            expanded = corridor.get_rect().inflate(200, 200)
-            if expanded.collidepoint(player.rect.centerx, player.rect.centery):
-                nearby.append(corridor)
-        return nearby
+        return []   # no corridors
 
-    def get_all_walkable_rects(self):
-        rects = []
-        for room in self.rooms:
-            rects.append(pygame.Rect(
-                room.x, room.y,
-                room.get_pixel_width(),
-                room.get_pixel_height()
-            ))
-        for corridor in self.corridors:
-            rects.append(corridor.get_rect())
-        return rects
+    def discover_room(self, idx):
+        self.discovered_rooms.add(idx)
 
+    def set_current_room(self, room):
+        for i, r in enumerate(self.rooms):
+            if r is room:
+                self.current_room_index = i
+                self.discover_room(i)
+                return
+
+    def check_waypoints(self, player):
+        for wroom in self.waypoint_rooms:
+            if wroom.check_player_interaction(player):
+                if wroom.waypoint_type == STAIRCASE:
+                    self.staircase_reached = True
+                wroom.activated = True
+                return wroom
+        return None
+
+    # ── draw ─────────────────────────────────────────────────────────
     def draw(self, screen, camera):
-        visible_rect = pygame.Rect(
-            camera.offset_x - 200,
-            camera.offset_y - 200,
-            1360, 940
-        )
+        current_room = self.get_current_room()
+        current_room.draw(screen, camera)
+        if isinstance(current_room, WaypointRoom):
+            current_room.draw_label(screen, camera)
 
-        for corridor in self.corridors:
-            if corridor.get_rect().colliderect(visible_rect):
-                corridor.draw(screen, camera)
-
-        for room in self.rooms:
-            room_rect = pygame.Rect(
-                room.x, room.y,
-                room.get_pixel_width(),
-                room.get_pixel_height()
-            )
-            if room_rect.colliderect(visible_rect):
-                room.draw(screen, camera)
-
-    def draw_minimap(self, screen):
-        minimap_x = screen.get_width() - 180
-        minimap_y = screen.get_height() - 180
-        minimap_scale = 12
+    def draw_minimap(self, screen, player):
+        mm_size = 160
+        mm_x    = screen.get_width()  - mm_size - 20
+        mm_y    = screen.get_height() - mm_size - 20
+        cell    = 10
 
         pygame.draw.rect(screen, (20, 20, 20),
-            (minimap_x - 5, minimap_y - 5, 170, 170))
+            (mm_x-5, mm_y-5, mm_size+10, mm_size+10))
+
+        cur_grid   = self.room_grid.get(
+                         id(self.get_current_room()), (0,0))
+        cx_g, cy_g = cur_grid
 
         for i, room in enumerate(self.rooms):
-            rx = (room.x - 2000) // ROOM_SPACING_X
-            ry = (room.y - 2000) // ROOM_SPACING_Y
+            if i not in self.discovered_rooms:
+                continue
+            gp = self.room_grid.get(id(room))
+            if gp is None:
+                continue
+            rx, ry = gp
+            mx = mm_x + mm_size//2 + (rx - cx_g) * cell * 3
+            my = mm_y + mm_size//2 + (ry - cy_g) * cell * 3
 
-            mx = minimap_x + rx * minimap_scale * 4 + 80
-            my = minimap_y + ry * minimap_scale * 4 + 80
+            if not (mm_x <= mx <= mm_x+mm_size and
+                    mm_y <= my <= mm_y+mm_size):
+                continue
 
-            color = (0, 200, 255) if i == self.current_room_index else (150, 150, 150)
-            pygame.draw.rect(screen, color,
-                (mx, my, minimap_scale, minimap_scale))
+            if isinstance(room, WaypointRoom):
+                color = room.color
+            elif i == self.current_room_index:
+                color = (0, 200, 255)
+            else:
+                color = (150, 150, 150)
 
+            pygame.draw.rect(screen, color, (mx, my, cell, cell))
+
+        pygame.draw.circle(screen, (255, 255, 255),
+            (mm_x+mm_size//2, mm_y+mm_size//2), 3)
         pygame.draw.rect(screen, (255, 255, 255),
-            (minimap_x - 5, minimap_y - 5, 170, 170), 2)
+            (mm_x-5, mm_y-5, mm_size+10, mm_size+10), 2)

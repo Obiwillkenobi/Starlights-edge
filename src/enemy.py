@@ -31,28 +31,35 @@ class Enemy:
         self.patrol_dx = random.choice([-1, 0, 1])
         self.patrol_dy = random.choice([-1, 0, 1])
         self.walls = []
+        self.player_in_room = False
 
-        # Lock enemy to its home room boundaries
         self.home_room = room
         if room:
             from room import TILE_SIZE
-            # Keep enemies inside the floor area (not walls)
             self.bounds = pygame.Rect(
                 room.x + TILE_SIZE,
                 room.y + TILE_SIZE,
                 room.get_pixel_width() - TILE_SIZE * 2,
                 room.get_pixel_height() - TILE_SIZE * 2
             )
+            self.home_x = room.x + room.get_pixel_width() // 2
+            self.home_y = room.y + room.get_pixel_height() // 2
         else:
             self.bounds = None
+            self.home_x = x
+            self.home_y = y
 
-    def get_distance(self, player):
-        dx = player.rect.centerx - self.rect.centerx
-        dy = player.rect.centery - self.rect.centery
+    def get_distance_to(self, x, y):
+        dx = x - self.rect.centerx
+        dy = y - self.rect.centery
         return math.sqrt(dx * dx + dy * dy)
 
+    def get_distance(self, player):
+        return self.get_distance_to(
+            player.rect.centerx, player.rect.centery
+        )
+
     def clamp_to_bounds(self):
-        # Keep enemy inside its home room
         if self.bounds:
             if self.rect.left < self.bounds.left:
                 self.rect.left = self.bounds.left
@@ -63,8 +70,42 @@ class Enemy:
             if self.rect.bottom > self.bounds.bottom:
                 self.rect.bottom = self.bounds.bottom
 
-    def update(self, player):
+    def move_toward(self, tx, ty, speed):
+        dx = tx - self.rect.centerx
+        dy = ty - self.rect.centery
+        dist = max(1, math.sqrt(dx * dx + dy * dy))
+        self.rect.x += int((dx / dist) * speed)
+        self.rect = resolve_collision(self.rect, self.walls)
+        self.rect.y += int((dy / dist) * speed)
+        self.rect = resolve_collision(self.rect, self.walls)
+        self.clamp_to_bounds()
+
+    def update(self, player, player_in_room=True):
         if not self.active:
+            return
+
+        self.player_in_room = player_in_room
+
+        if not player_in_room:
+            # Player has left — return to patrol
+            self.state = PATROLLING
+
+            # Drift back toward room center
+            dist_home = self.get_distance_to(self.home_x, self.home_y)
+            if dist_home > 10:
+                self.move_toward(self.home_x, self.home_y, ENEMY_SPEED)
+            else:
+                # Wander randomly once home
+                self.patrol_timer += 1
+                if self.patrol_timer >= PATROL_CHANGE_TIME:
+                    self.patrol_timer = 0
+                    self.patrol_dx = random.choice([-1, 0, 1])
+                    self.patrol_dy = random.choice([-1, 0, 1])
+                self.rect.x += self.patrol_dx * ENEMY_SPEED
+                self.rect = resolve_collision(self.rect, self.walls)
+                self.rect.y += self.patrol_dy * ENEMY_SPEED
+                self.rect = resolve_collision(self.rect, self.walls)
+                self.clamp_to_bounds()
             return
 
         distance = self.get_distance(player)
@@ -91,14 +132,10 @@ class Enemy:
             self.clamp_to_bounds()
 
         elif self.state == CHASING:
-            dx = player.rect.centerx - self.rect.centerx
-            dy = player.rect.centery - self.rect.centery
-            dist = max(1, math.sqrt(dx * dx + dy * dy))
-            self.rect.x += int((dx / dist) * ENEMY_CHASE_SPEED)
-            self.rect = resolve_collision(self.rect, self.walls)
-            self.rect.y += int((dy / dist) * ENEMY_CHASE_SPEED)
-            self.rect = resolve_collision(self.rect, self.walls)
-            self.clamp_to_bounds()
+            self.move_toward(
+                player.rect.centerx, player.rect.centery,
+                ENEMY_CHASE_SPEED
+            )
 
         elif self.state == ATTACKING:
             if self.attack_timer == 0:
@@ -125,7 +162,6 @@ class Enemy:
     def draw(self, screen, camera):
         if self.active:
             draw_rect = camera.apply(self.rect)
-
             color = ENEMY_PATROL_COLOR if self.state == PATROLLING else ENEMY_COLOR
             pygame.draw.rect(screen, color, draw_rect)
 
@@ -139,7 +175,3 @@ class Enemy:
                 (bar_x, bar_y, bar_width, bar_height))
             pygame.draw.rect(screen, (50, 200, 50),
                 (bar_x, bar_y, int(bar_width * health_ratio), bar_height))
-
-            font = pygame.font.SysFont(None, 18)
-            label = font.render(self.state, True, (255, 255, 255))
-            screen.blit(label, (draw_rect.x, draw_rect.y - 24))
