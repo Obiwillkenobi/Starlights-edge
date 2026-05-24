@@ -1,5 +1,6 @@
 import pygame
 from combat import SwordAttack, Projectile
+from collision import resolve_collision
 
 # --- CONSTANTS ---
 PLAYER_SPEED = 4
@@ -8,7 +9,7 @@ PLAYER_COLOR = (0, 200, 255)
 PLAYER_MAX_HEALTH = 10
 ATTACK_COOLDOWN = 20
 SHOOT_COOLDOWN = 30
-INVINCIBILITY_FRAMES = 60  # Player can't be hit again for 1 second after taking damage
+INVINCIBILITY_FRAMES = 60
 
 class Player:
     def __init__(self, x, y):
@@ -28,6 +29,9 @@ class Player:
         self.attack_timer = 0
         self.shoot_timer = 0
 
+        # Current room walls (updated each frame)
+        self.walls = []
+
     def take_damage(self, amount):
         if self.invincibility_timer == 0 and self.alive:
             self.health -= amount
@@ -45,15 +49,19 @@ class Player:
         # --- MOVEMENT ---
         if keys[pygame.K_w] or keys[pygame.K_UP]:
             self.rect.y -= self.speed
+            self.rect = resolve_collision(self.rect, self.walls)
             self.direction = "up"
         if keys[pygame.K_s] or keys[pygame.K_DOWN]:
             self.rect.y += self.speed
+            self.rect = resolve_collision(self.rect, self.walls)
             self.direction = "down"
         if keys[pygame.K_a] or keys[pygame.K_LEFT]:
             self.rect.x -= self.speed
+            self.rect = resolve_collision(self.rect, self.walls)
             self.direction = "left"
         if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
             self.rect.x += self.speed
+            self.rect = resolve_collision(self.rect, self.walls)
             self.direction = "right"
 
         # --- MELEE ATTACK (J key) ---
@@ -73,7 +81,6 @@ class Player:
             self.shoot_timer = SHOOT_COOLDOWN
 
     def update(self):
-        # Count down timers
         if self.attack_timer > 0:
             self.attack_timer -= 1
         if self.shoot_timer > 0:
@@ -81,21 +88,17 @@ class Player:
         if self.invincibility_timer > 0:
             self.invincibility_timer -= 1
 
-        # Update sword
         if self.sword and self.sword.active:
             self.sword.update()
 
-        # Update projectiles
         for p in self.projectiles:
             p.update()
 
-        # Remove inactive projectiles
         self.projectiles = [p for p in self.projectiles if p.active]
 
     def draw(self, screen, camera):
         draw_rect = camera.apply(self.rect)
 
-        # Flash white when invincible
         if self.invincibility_timer > 0 and self.invincibility_timer % 6 < 3:
             color = (255, 255, 255)
         else:
@@ -103,31 +106,24 @@ class Player:
 
         pygame.draw.rect(screen, color, draw_rect)
 
-        # Draw sword
         if self.sword and self.sword.active:
             self.sword.draw(screen, camera)
 
-        # Draw projectiles
         for p in self.projectiles:
             p.draw(screen, camera)
 
     def draw_hud(self, screen):
-        # Draw health bar in top left corner
         bar_x, bar_y = 20, 20
         bar_width, bar_height = 200, 20
         health_ratio = self.health / self.max_health
 
-        # Background
         pygame.draw.rect(screen, (80, 80, 80),
             (bar_x, bar_y, bar_width, bar_height))
-        # Health
         pygame.draw.rect(screen, (200, 50, 50),
             (bar_x, bar_y, int(bar_width * health_ratio), bar_height))
-        # Border
         pygame.draw.rect(screen, (255, 255, 255),
             (bar_x, bar_y, bar_width, bar_height), 2)
 
-        # Health text
         font = pygame.font.SysFont(None, 24)
         text = font.render(
             f"HP: {self.health} / {self.max_health}",

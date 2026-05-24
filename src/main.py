@@ -5,6 +5,7 @@ from player import Player
 from camera import Camera
 from enemy import Enemy
 from floor import Floor
+from collision import get_wall_rects
 
 # --- CONSTANTS ---
 SCREEN_WIDTH = 960
@@ -18,7 +19,6 @@ WHITE = (255, 255, 255)
 RED = (200, 50, 50)
 
 def get_current_room(floor, player):
-    # Find which room the player is currently in
     for i, room in enumerate(floor.rooms):
         room_rect = pygame.Rect(
             room.x, room.y,
@@ -81,9 +81,14 @@ def main():
             player.update()
             camera.update(player)
 
-            # Only update enemies in the current room
+            # Get current room and its walls
             current_room = get_current_room(floor, player)
+            walls = get_wall_rects(current_room)
+
+            # Pass walls to player and enemies
+            player.walls = walls
             for enemy in current_room.enemies:
+                enemy.walls = walls
                 enemy.update(player)
                 enemy.check_hits(player)
             current_room.enemies = [
@@ -94,7 +99,7 @@ def main():
         screen.fill(BLACK)
         floor.draw(screen, camera)
 
-        # Only draw enemies in nearby rooms
+        # Draw enemies in nearby rooms
         for room in floor.rooms:
             room_rect = pygame.Rect(
                 room.x, room.y,
