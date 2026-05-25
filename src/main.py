@@ -8,7 +8,7 @@ from floor import Floor, reset_scheduler
 from floor_manager import FloorManager
 from collision import get_wall_rects, get_all_walls
 from waypoints import (STAIRCASE, RESCUE, LIBRARY,
-    ARMORY, DOJO, STORE, KITCHEN, KENNELS)
+    ARMORY, DOJO, STORE, KITCHEN, KENNELS, BOSS)
 
 # --- CONSTANTS ---
 SCREEN_WIDTH  = 960
@@ -30,7 +30,8 @@ WAYPOINT_MESSAGES = {
     STORE:     "The Store! Browse the wares...",
     KITCHEN:   "The Kitchen! Something smells good...",
     KENNELS:   "The Kennels! What lurks within...",
-    RESCUE:    "A family member is here! Press E to rescue them."
+    RESCUE:    "A family member is here! Press E to rescue them.",
+    BOSS:      "A powerful enemy blocks the way to the staircase!"
 }
 
 def spawn_enemies(floor, fm):

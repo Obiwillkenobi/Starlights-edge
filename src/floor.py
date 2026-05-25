@@ -3,7 +3,8 @@ import random
 from room import Room, Tile, TILE_SIZE
 from waypoints import (WaypointRoom, WaypointScheduler,
     STAIRCASE, LIBRARY, ARMORY, DOJO,
-    RESCUE, STORE, KITCHEN, KENNELS)
+    RESCUE, STORE, KITCHEN, KENNELS, BOSS,
+    BOSS_FLOORS)
 
 GRID_CELL_W = 900
 GRID_CELL_H = 700
@@ -35,10 +36,10 @@ class Floor:
         self.current_room_index = 0
         self.staircase_reached  = False
         self.discovered_rooms   = {0}
-        self.room_grid          = {}   # id(room) -> (gx, gy)
-        self.grid_to_room       = {}   # (gx, gy) -> room
-        # connections: id(room) -> {direction: neighbor_room}
+        self.room_grid          = {}
+        self.grid_to_room       = {}
         self.connections        = {}
+        self.boss_room          = None
         self.generate()
 
     # ── helpers ───────────────────────────────────────────────────────
@@ -54,7 +55,9 @@ class Floor:
         queue    = deque([start])
         farthest = start
         max_dist = 0
-        offsets  = [(0,-1),(0,1),(1,0),(-1,0)]
+        for dx, dy in [(0,-1),(0,1),(1,0),(-1,0)]:
+            pass
+        offsets = [(0,-1),(0,1),(1,0),(-1,0)]
         while queue:
             pos  = queue.popleft()
             dist = visited[pos]
@@ -69,10 +72,9 @@ class Floor:
         return farthest
 
     def connect(self, room_a, direction, room_b):
-        """Record a directional connection and add doors."""
         opp = {"north":"south","south":"north",
                "east":"west",  "west":"east"}
-        room_a.doors[direction]    = True
+        room_a.doors[direction]      = True
         room_b.doors[opp[direction]] = True
         room_a.add_doors()
         room_b.add_doors()
@@ -95,6 +97,7 @@ class Floor:
         self.room_grid        = {}
         self.grid_to_room     = {}
         self.connections      = {}
+        self.boss_room        = None
 
         offsets  = {"north":(0,-1),"south":(0,1),
                     "east":(1,0),  "west":(-1,0)}
@@ -110,65 +113,86 @@ class Floor:
         target   = rooms_for_floor(self.floor_number)
         attempts = 0
         while len(self.rooms) < target and attempts < 500:
-            attempts  += 1
-            grid_pos   = random.choice(frontier)
-            direction  = random.choice(list(offsets.keys()))
-            dx, dy     = offsets[direction]
-            new_grid   = (grid_pos[0]+dx, grid_pos[1]+dy)
+            attempts += 1
+            grid_pos  = random.choice(frontier)
+            direction = random.choice(list(offsets.keys()))
+            dx, dy    = offsets[direction]
+            new_grid  = (grid_pos[0]+dx, grid_pos[1]+dy)
             if new_grid in self.grid_to_room:
                 continue
             new_room = Room(0, 0)
             self.place_room(new_room, *new_grid)
-            self.connect(self.grid_to_room[grid_pos], direction, new_room)
+            self.connect(self.grid_to_room[grid_pos],
+                         direction, new_room)
             frontier.append(new_grid)
 
-        # Place staircase at farthest point
+        # Find farthest point
         farthest = self.find_farthest_grid()
-        stair_grid = None
-        stair_dir  = None
-        for direction, (dx, dy) in offsets.items():
-            candidate = (farthest[0]+dx, farthest[1]+dy)
-            if candidate not in self.grid_to_room:
-                stair_grid = candidate
-                stair_dir  = direction
-                break
 
-        if stair_grid:
-            stair_room = WaypointRoom(0, 0, STAIRCASE)
-            self.place_room(stair_room, *stair_grid)
-            self.waypoint_rooms.append(stair_room)
-            self.connect(
-                self.grid_to_room[farthest],
-                stair_dir, stair_room)
+        # On boss floors: insert boss room between farthest and staircase
+        if self.floor_number in BOSS_FLOORS:
+            # Boss room goes one step beyond farthest
+            boss_grid = None
+            boss_dir  = None
+            for direction, (dx, dy) in offsets.items():
+                candidate = (farthest[0]+dx, farthest[1]+dy)
+                if candidate not in self.grid_to_room:
+                    boss_grid = candidate
+                    boss_dir  = direction
+                    break
+
+            if boss_grid:
+                boss_room = WaypointRoom(0, 0, BOSS)
+                self.place_room(boss_room, *boss_grid)
+                self.waypoint_rooms.append(boss_room)
+                self.boss_room = boss_room
+                self.connect(
+                    self.grid_to_room[farthest],
+                    boss_dir, boss_room)
+
+                # Staircase goes one step beyond boss room
+                stair_grid = None
+                stair_dir  = None
+                for direction, (dx, dy) in offsets.items():
+                    candidate = (boss_grid[0]+dx, boss_grid[1]+dy)
+                    if candidate not in self.grid_to_room:
+                        stair_grid = candidate
+                        stair_dir  = direction
+                        break
+
+                if stair_grid:
+                    stair_room = WaypointRoom(0, 0, STAIRCASE)
+                    self.place_room(stair_room, *stair_grid)
+                    self.waypoint_rooms.append(stair_room)
+                    self.connect(boss_room, stair_dir, stair_room)
+                else:
+                    # No space — attach staircase to boss room anyway
+                    stair_room = WaypointRoom(0, 0, STAIRCASE)
+                    alt_dir = list(offsets.keys())[0]
+                    alt_grid = (boss_grid[0]+offsets[alt_dir][0],
+                                boss_grid[1]+offsets[alt_dir][1])
+                    self.place_room(stair_room, *alt_grid)
+                    self.waypoint_rooms.append(stair_room)
+                    self.connect(boss_room, alt_dir, stair_room)
+            else:
+                # No space for boss — fall back to staircase only
+                self._place_staircase_at(farthest, offsets)
         else:
-            # All neighbors occupied — convert farthest room to staircase
-            existing = self.grid_to_room[farthest]
-            idx = self.rooms.index(existing)
-            stair_room = WaypointRoom(existing.x, existing.y, STAIRCASE)
-            stair_room.doors = existing.doors.copy()
-            stair_room.tiles = existing.tiles
-            stair_room.surface = None
-            self.rooms[idx] = stair_room
-            self.waypoint_rooms.append(stair_room)
-            self.room_grid[id(stair_room)] = farthest
-            self.grid_to_room[farthest]    = stair_room
-            self.connections[id(stair_room)] = self.connections.pop(id(existing))
-            for room in self.rooms:
-                for d, nb in self.connections.get(id(room), {}).items():
-                    if nb is existing:
-                        self.connections[id(room)][d] = stair_room
+            self._place_staircase_at(farthest, offsets)
 
         # Place other waypoints
         scheduler      = get_scheduler()
-        waypoint_types = scheduler.get_waypoints_for_floor(self.floor_number)
-        non_stair      = [w for w in waypoint_types if w != STAIRCASE]
+        waypoint_types = scheduler.get_waypoints_for_floor(
+                             self.floor_number)
+        non_special    = [w for w in waypoint_types
+                          if w not in (STAIRCASE, BOSS)]
 
         wp_positions = [
             (2,0),(-2,0),(0,2),(0,-2),
             (3,0),(-3,0),(0,3),(0,-3)
         ]
 
-        for i, wtype in enumerate(non_stair):
+        for i, wtype in enumerate(non_special):
             if i >= len(wp_positions):
                 break
             gx, gy = wp_positions[i]
@@ -185,7 +209,6 @@ class Floor:
             wroom = WaypointRoom(0, 0, wtype)
             self.place_room(wroom, gx, gy)
             self.waypoint_rooms.append(wroom)
-            # Connect to nearest neighbor
             for direction, (ddx, ddy) in offsets.items():
                 ngrid = (gx-ddx, gy-ddy)
                 if ngrid in self.grid_to_room:
@@ -196,48 +219,77 @@ class Floor:
 
         self.current_room_index = 0
 
+    def _place_staircase_at(self, farthest, offsets):
+        """Place staircase one step beyond farthest room."""
+        opposite = {"north":"south","south":"north",
+                    "east":"west",  "west":"east"}
+        stair_grid = None
+        stair_dir  = None
+        for direction, (dx, dy) in offsets.items():
+            candidate = (farthest[0]+dx, farthest[1]+dy)
+            if candidate not in self.grid_to_room:
+                stair_grid = candidate
+                stair_dir  = direction
+                break
+
+        stair_room = WaypointRoom(0, 0, STAIRCASE)
+        if stair_grid:
+            self.place_room(stair_room, *stair_grid)
+            self.connect(
+                self.grid_to_room[farthest],
+                stair_dir, stair_room)
+        else:
+            # Convert farthest room to staircase
+            existing = self.grid_to_room[farthest]
+            idx = self.rooms.index(existing)
+            stair_room = WaypointRoom(
+                existing.x, existing.y, STAIRCASE)
+            stair_room.doors   = existing.doors.copy()
+            stair_room.tiles   = existing.tiles
+            stair_room.surface = None
+            self.rooms[idx]                  = stair_room
+            self.room_grid[id(stair_room)]   = farthest
+            self.grid_to_room[farthest]      = stair_room
+            self.connections[id(stair_room)] = \
+                self.connections.pop(id(existing))
+            for room in self.rooms:
+                for d, nb in self.connections.get(
+                        id(room), {}).items():
+                    if nb is existing:
+                        self.connections[id(room)][d] = stair_room
+
+        self.waypoint_rooms.append(stair_room)
+
     # ── door transition helpers ───────────────────────────────────────
     def get_door_rect(self, room, direction):
-        """
-        Returns the pixel rect of the door opening on the given wall.
-        Used to detect when the player walks through a door.
-        """
-        cp      = 3 * TILE_SIZE   # 3-tile wide opening
+        cp      = 3 * TILE_SIZE
         mid_col = room.width  // 2
         mid_row = room.height // 2
-
         if direction == "north":
             return pygame.Rect(
-                room.x + (mid_col - 1) * TILE_SIZE,
-                room.y,
-                cp, TILE_SIZE)
+                room.x + (mid_col-1) * TILE_SIZE,
+                room.y, cp, TILE_SIZE)
         if direction == "south":
             return pygame.Rect(
-                room.x + (mid_col - 1) * TILE_SIZE,
+                room.x + (mid_col-1) * TILE_SIZE,
                 room.y + room.get_pixel_height() - TILE_SIZE,
                 cp, TILE_SIZE)
         if direction == "west":
             return pygame.Rect(
                 room.x,
-                room.y + (mid_row - 1) * TILE_SIZE,
+                room.y + (mid_row-1) * TILE_SIZE,
                 TILE_SIZE, cp)
         if direction == "east":
             return pygame.Rect(
                 room.x + room.get_pixel_width() - TILE_SIZE,
-                room.y + (mid_row - 1) * TILE_SIZE,
+                room.y + (mid_row-1) * TILE_SIZE,
                 TILE_SIZE, cp)
 
     def get_spawn_point(self, room, entry_direction):
-        """
-        Returns where the player should appear when entering a room
-        from entry_direction. Places them just inside the door.
-        """
-        cp      = 3 * TILE_SIZE
         mid_col = room.width  // 2
         mid_row = room.height // 2
         pad     = TILE_SIZE * 2
-
-        if entry_direction == "south":   # came from north, enter south wall
+        if entry_direction == "south":
             return (room.x + mid_col * TILE_SIZE,
                     room.y + room.get_pixel_height() - pad)
         if entry_direction == "north":
@@ -251,21 +303,20 @@ class Floor:
                     room.y + mid_row * TILE_SIZE)
 
     def check_door_transition(self, player):
-        """
-        Check if the player has walked through any door in the
-        current room. Returns (neighbor_room, entry_direction) or
-        (None, None).
-        """
-        current_room = self.get_current_room()
+        current_room     = self.get_current_room()
         room_connections = self.connections.get(id(current_room), {})
-
+        opp = {"north":"south","south":"north",
+               "east":"west",  "west":"east"}
         for direction, neighbor in room_connections.items():
+            # Block entry to staircase from boss room if boss not defeated
+            if (isinstance(neighbor, WaypointRoom) and
+                    neighbor.waypoint_type == STAIRCASE and
+                    self.boss_room is not None and
+                    not self.boss_room.boss_defeated):
+                continue
             door_rect = self.get_door_rect(current_room, direction)
             if door_rect and player.rect.colliderect(door_rect):
-                opp = {"north":"south","south":"north",
-                       "east":"west",  "west":"east"}
                 return neighbor, opp[direction]
-
         return None, None
 
     # ── runtime ───────────────────────────────────────────────────────
@@ -273,7 +324,7 @@ class Floor:
         return self.rooms[self.current_room_index]
 
     def get_nearby_corridors(self, player):
-        return []   # no corridors
+        return []
 
     def discover_room(self, idx):
         self.discovered_rooms.add(idx)
@@ -307,7 +358,7 @@ class Floor:
         mm_y    = screen.get_height() - mm_size - 20
         cell    = 10
 
-        pygame.draw.rect(screen, (20, 20, 20),
+        pygame.draw.rect(screen, (20,20,20),
             (mm_x-5, mm_y-5, mm_size+10, mm_size+10))
 
         cur_grid   = self.room_grid.get(
@@ -321,23 +372,20 @@ class Floor:
             if gp is None:
                 continue
             rx, ry = gp
-            mx = mm_x + mm_size//2 + (rx - cx_g) * cell * 3
-            my = mm_y + mm_size//2 + (ry - cy_g) * cell * 3
-
+            mx = mm_x + mm_size//2 + (rx-cx_g)*cell*3
+            my = mm_y + mm_size//2 + (ry-cy_g)*cell*3
             if not (mm_x <= mx <= mm_x+mm_size and
                     mm_y <= my <= mm_y+mm_size):
                 continue
-
             if isinstance(room, WaypointRoom):
                 color = room.color
             elif i == self.current_room_index:
-                color = (0, 200, 255)
+                color = (0,200,255)
             else:
-                color = (150, 150, 150)
+                color = (150,150,150)
+            pygame.draw.rect(screen, color, (mx,my,cell,cell))
 
-            pygame.draw.rect(screen, color, (mx, my, cell, cell))
-
-        pygame.draw.circle(screen, (255, 255, 255),
+        pygame.draw.circle(screen, (255,255,255),
             (mm_x+mm_size//2, mm_y+mm_size//2), 3)
-        pygame.draw.rect(screen, (255, 255, 255),
+        pygame.draw.rect(screen, (255,255,255),
             (mm_x-5, mm_y-5, mm_size+10, mm_size+10), 2)
