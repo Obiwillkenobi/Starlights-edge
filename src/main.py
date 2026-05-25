@@ -9,7 +9,10 @@ from floor_manager import FloorManager
 from collision import get_wall_rects, get_all_walls
 from graveyard import Graveyard
 from waypoints import (STAIRCASE, RESCUE, LIBRARY,
-    ARMORY, DOJO, STORE, KITCHEN, KENNELS, BOSS)
+    ARMORY, DOJO, STORE, KITCHEN, KENNELS, BOSS,
+    TEMPLE_ORAKNOS, TEMPLE_THANGAR, TEMPLE_JERRY,
+    TEMPLE_SQUIRREL, TEMPLE_TYPES, TEMPLE_GOD_MAP)
+from stats import GODS
 
 # --- CONSTANTS ---
 SCREEN_WIDTH  = 960
@@ -23,20 +26,23 @@ RED   = (200, 50, 50)
 GOLD  = (255, 215, 0)
 GREEN = (50, 200, 50)
 
-# --- GAME STATES ---
 STATE_GRAVEYARD = "graveyard"
 STATE_CASTLE    = "castle"
 
 WAYPOINT_MESSAGES = {
-    STAIRCASE: "Press E to go to the next floor!",
-    LIBRARY:   "The Magic Library! Spells await...",
-    ARMORY:    "The Armory! Weapons and upgrades...",
-    DOJO:      "The Dojo! Train your combat skills...",
-    STORE:     "The Store! Browse the wares...",
-    KITCHEN:   "The Kitchen! Something smells good...",
-    KENNELS:   "The Kennels! What lurks within...",
-    RESCUE:    "A family member is here! Press E to rescue them.",
-    BOSS:      "A powerful enemy blocks the way to the staircase!"
+    STAIRCASE:       "Press E to go to the next floor!",
+    LIBRARY:         "The Magic Library! Spells await...",
+    ARMORY:          "The Armory! Weapons and upgrades...",
+    DOJO:            "The Dojo! Train your combat skills...",
+    STORE:           "The Store! Browse the wares...",
+    KITCHEN:         "The Kitchen! Something smells good...",
+    KENNELS:         "The Kennels! What lurks within...",
+    RESCUE:          "A family member is here! Press E to rescue them.",
+    BOSS:            "A powerful enemy blocks the way to the staircase!",
+    TEMPLE_ORAKNOS:  "Temple of Oraknos — Press E to pray and heal.",
+    TEMPLE_THANGAR:  "Temple of Thangar — Press E to pray and heal.",
+    TEMPLE_JERRY:    "Temple of Jerry — Press E to pray and heal.",
+    TEMPLE_SQUIRREL: "Temple of A Squirrel — Press E to pray and heal.",
 }
 
 def spawn_enemies(floor, fm):
@@ -96,6 +102,52 @@ def draw_graveyard_hud(screen, font, graveyard):
         screen.blit(font.render(
             "Defeat all enemies to open the gate!",
             True, (180, 180, 180)), (20, SCREEN_HEIGHT - 55))
+
+def draw_worship_status(screen, font, player):
+    """Show which god the player currently worships."""
+    god = player.stats.worshipped_god
+    if god:
+        god_data = GODS.get(god, {})
+        color    = god_data.get("color", WHITE)
+        name     = god_data.get("name", god)
+        screen.blit(font.render(
+            f"Worships: {name}", True, color),
+            (20, 310))
+
+def handle_temple_interaction(player, waypoint_type):
+    """
+    Handle E press in a temple.
+    Heals the player and offers god worship.
+    Returns a notification string.
+    """
+    god_key  = TEMPLE_GOD_MAP.get(waypoint_type)
+    god_data = GODS.get(god_key, {})
+    god_name = god_data.get("name", "the deity")
+
+    # Full heal
+    player.full_heal()
+
+    # Worship the god
+    old_god = player.stats.worshipped_god
+    player.stats.worshipped_god = god_key
+
+    # Recalculate class
+    player.stats.determine_class(
+        None,   # No weapon system yet
+        None,   # No armor system yet
+        god_key
+    )
+    player.refresh_max_health()
+
+    if old_god == god_key:
+        return f"You pray to {god_name}. You feel restored!"
+    elif old_god:
+        old_name = GODS.get(old_god, {}).get("name", old_god)
+        return (f"You abandon {old_name} and "
+                f"pledge yourself to {god_name}. Healed!")
+    else:
+        return (f"You pledge yourself to {god_name} "
+                f"and are healed!")
 
 def main():
     pygame.init()
@@ -166,26 +218,32 @@ def main():
                     last_waypoint_type = None
 
                 if game_state == STATE_CASTLE and floor:
-                    if event.key == pygame.K_e and \
-                            floor.staircase_reached:
-                        do_fade(screen, clock, fade_in=False)
-                        new_fl = next_floor(player, camera)
-                        if new_fl is None:
-                            notification       = \
-                                "You have reached the top floor!"
-                            notification_timer = 180
-                        else:
-                            floor              = new_fl
-                            notification       = \
-                                f"Floor {fm.current_floor}!"
-                            notification_timer = 180
-                            last_waypoint_type = None
-                        do_fade(screen, clock, fade_in=True)
 
                     if event.key == pygame.K_e:
                         current_room = floor.get_current_room()
                         from waypoints import WaypointRoom
-                        if (isinstance(current_room, WaypointRoom)
+
+                        # Advance floor at staircase
+                        if (floor.staircase_reached and
+                                isinstance(current_room, WaypointRoom)
+                                and current_room.waypoint_type
+                                == STAIRCASE):
+                            do_fade(screen, clock, fade_in=False)
+                            new_fl = next_floor(player, camera)
+                            if new_fl is None:
+                                notification       = \
+                                    "You have reached the top floor!"
+                                notification_timer = 180
+                            else:
+                                floor              = new_fl
+                                notification       = \
+                                    f"Floor {fm.current_floor}!"
+                                notification_timer = 180
+                                last_waypoint_type = None
+                            do_fade(screen, clock, fade_in=True)
+
+                        # Rescue family
+                        elif (isinstance(current_room, WaypointRoom)
                                 and current_room.waypoint_type
                                 == RESCUE):
                             name = fm.try_rescue(fm.current_floor)
@@ -193,6 +251,16 @@ def main():
                                 notification       = \
                                     f"You rescued your {name}!"
                                 notification_timer = 300
+
+                        # Temple worship and healing
+                        elif (isinstance(current_room, WaypointRoom)
+                                and current_room.waypoint_type
+                                in TEMPLE_TYPES):
+                            msg = handle_temple_interaction(
+                                player,
+                                current_room.waypoint_type)
+                            notification       = msg
+                            notification_timer = 300
 
         # 2. UPDATE
         if player.alive and not transitioning:
@@ -276,6 +344,7 @@ def main():
             player.draw_hud(screen)
             floor.draw_minimap(screen, player)
             draw_hud_extras(screen, font, fm)
+            draw_worship_status(screen, font, player)
 
         if notification:
             notif = med_font.render(notification, True, GOLD)
