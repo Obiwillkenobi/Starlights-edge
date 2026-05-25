@@ -1,19 +1,20 @@
 import pygame
 
 # --- CONSTANTS ---
-SWORD_COLOR = (255, 220, 50)    # Yellow
-PROJECTILE_COLOR = (255, 100, 0) # Orange
-PROJECTILE_SPEED = 8
-PROJECTILE_SIZE = 8
-SWORD_DURATION = 10  # Frames the sword stays active
+SWORD_COLOR          = (255, 220, 50)
+PROJECTILE_COLOR     = (255, 100, 0)
+PROJECTILE_SPEED     = 8
+PROJECTILE_SIZE      = 8
+SWORD_DURATION       = 10
+
 
 class SwordAttack:
-    def __init__(self, player_rect, direction):
+    def __init__(self, player_rect, direction, damage=1):
         self.duration = SWORD_DURATION
-        self.active = True
+        self.active   = True
+        self.damage   = damage
+        offset        = 40
 
-        # Place the sword hitbox in front of the player
-        offset = 40
         if direction == "up":
             self.rect = pygame.Rect(
                 player_rect.centerx - 16,
@@ -47,19 +48,21 @@ class SwordAttack:
 
 
 class Projectile:
-    def __init__(self, x, y, direction):
-        self.rect = pygame.Rect(x, y, PROJECTILE_SIZE, PROJECTILE_SIZE)
-        self.active = True
+    def __init__(self, x, y, direction, damage=1):
+        self.rect      = pygame.Rect(x, y,
+                             PROJECTILE_SIZE, PROJECTILE_SIZE)
+        self.active    = True
         self.direction = direction
+        self.damage    = damage
 
         if direction == "up":
             self.dx, self.dy = 0, -PROJECTILE_SPEED
         elif direction == "down":
-            self.dx, self.dy = 0, PROJECTILE_SPEED
+            self.dx, self.dy = 0,  PROJECTILE_SPEED
         elif direction == "left":
             self.dx, self.dy = -PROJECTILE_SPEED, 0
         elif direction == "right":
-            self.dx, self.dy = PROJECTILE_SPEED, 0
+            self.dx, self.dy = PROJECTILE_SPEED,  0
 
     def update(self):
         self.rect.x += self.dx

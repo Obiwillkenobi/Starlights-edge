@@ -87,15 +87,15 @@ def draw_hud_extras(screen, font, fm):
 def draw_graveyard_hud(screen, font, graveyard):
     screen.blit(font.render(
         f"Enemies remaining: {len(graveyard.enemies)}",
-        True, WHITE), (20, 50))
+        True, WHITE), (20, SCREEN_HEIGHT - 80))
     if graveyard.is_cleared():
         screen.blit(font.render(
             "All enemies defeated! Head to the north gate!",
-            True, GOLD), (20, 75))
+            True, GOLD), (20, SCREEN_HEIGHT - 55))
     else:
         screen.blit(font.render(
             "Defeat all enemies to open the gate!",
-            True, (180, 180, 180)), (20, 75))
+            True, (180, 180, 180)), (20, SCREEN_HEIGHT - 55))
 
 def main():
     pygame.init()

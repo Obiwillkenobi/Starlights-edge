@@ -141,8 +141,16 @@ class Enemy:
     def check_hits(self, player):
         if player.sword and player.sword.active:
             if self.rect.colliderect(player.sword.rect):
-                self.health -= 1
+                self.health -= player.sword.damage
                 player.sword.active = False
+
+        for p in player.projectiles:
+            if self.rect.colliderect(p.rect):
+                self.health -= p.damage
+                p.active = False
+
+        if self.health <= 0:
+            self.active = False
 
         for p in player.projectiles:
             if self.rect.colliderect(p.rect):
