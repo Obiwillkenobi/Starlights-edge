@@ -1,48 +1,58 @@
 import pygame
 import random
+import math
 from collision import resolve_collision
 
 # --- CONSTANTS ---
 TILE_SIZE = 64
 
 # --- COLORS ---
-STONE_COLOR       = (100, 95,  90)
-STONE_LINE_COLOR  = (80,  75,  70)
-DIRT_COLOR        = (120, 100, 70)
-DIRT_LINE_COLOR   = (100, 85,  60)
-GRASS_COLOR       = (40,  80,  40)
-GRASS_LINE_COLOR  = (35,  70,  35)
-WOOD_COLOR        = (120, 80,  40)
-WOOD_LINE_COLOR   = (100, 65,  30)
-WATER_COLOR       = (40,  80,  150)
-WATER_LINE_COLOR  = (30,  60,  130)
-WALL_COLOR        = (80,  70,  60)
-WALL_LINE_COLOR   = (60,  55,  45)
-DOOR_COLOR        = (150, 100, 50)
-GATE_COLOR        = (60,  50,  40)
-RITUAL_COLOR      = (80,  0,   150)
+STONE_COLOR      = (100, 95,  90)
+STONE_LINE_COLOR = (80,  75,  70)
+GRASS_COLOR      = (40,  80,  40)
+GRASS_LINE_COLOR = (35,  70,  35)
+WOOD_COLOR       = (120, 80,  40)
+WOOD_LINE_COLOR  = (100, 65,  30)
+WALL_COLOR       = (80,  70,  60)
+WALL_LINE_COLOR  = (60,  55,  45)
+DOOR_COLOR       = (150, 100, 50)
+GATE_COLOR       = (60,  50,  40)
+RITUAL_COLOR     = (80,  0,   150)
+EMPTY_COLOR      = (10,  10,  10)
 
 # --- TILE TYPES ---
 STONE  = "stone"
-DIRT   = "dirt"
 GRASS  = "grass"
 WOOD   = "wood"
-WATER  = "water"
 WALL   = "wall"
 DOOR   = "door"
 GATE   = "gate"
 RITUAL = "ritual"
 EMPTY  = "empty"
 
-WALKABLE = {STONE, DIRT, GRASS, WOOD, DOOR, GATE, RITUAL}
+WALKABLE = {STONE, GRASS, WOOD, DOOR, GATE, RITUAL}
+
+# --- SHARED FONTS ---
+# Created once at module level so they are never recreated per frame
+_FONT_SMALL  = None
+_FONT_MEDIUM = None
+_FONT_LARGE  = None
+
+def get_fonts():
+    global _FONT_SMALL, _FONT_MEDIUM, _FONT_LARGE
+    if _FONT_SMALL is None:
+        _FONT_SMALL  = pygame.font.SysFont(None, 18)
+        _FONT_MEDIUM = pygame.font.SysFont(None, 22)
+        _FONT_LARGE  = pygame.font.SysFont(None, 26)
+    return _FONT_SMALL, _FONT_MEDIUM, _FONT_LARGE
 
 # --- NPC DIALOGUE ---
 NPC_DIALOGUE = {
     "friend": [
         "I've almost decoded another passage from the tome!",
-        "The revival ritual is ready. Don't worry — I'll bring you back.",
+        "The revival ritual is ready. Don't worry, I'll bring you back.",
         "Be careful out there. The castle changes every time.",
-        "I found something interesting... the BB seems afraid of something.",
+        "I found something... the BB seems afraid of something.",
     ],
     "shopkeeper": [
         "Take whatever you need, friend. On the house.",
@@ -55,7 +65,7 @@ NPC_DIALOGUE = {
     ],
     "shop_customer_2": [
         "The shopkeeper is a good man. He'd give you the shirt off his back.",
-        "I heard the castle is different every time you enter. Spooky.",
+        "I heard the castle is different every time. Spooky.",
     ],
     "wizard": [
         "Magic is patience, and patience is power.",
@@ -69,8 +79,8 @@ NPC_DIALOGUE = {
     ],
     "innkeeper": [
         "Welcome to the Rusty Flagon! What'll it be?",
-        "Food and rest — best things in the world.",
-        "We've got stew, bread, and something the cook calls 'mystery pie'.",
+        "Food and rest, best things in the world.",
+        "We've got stew, bread, and mystery pie.",
     ],
     "tavern_patron_1": [
         "I'll drink to your health, friend!",
@@ -78,7 +88,7 @@ NPC_DIALOGUE = {
     ],
     "tavern_patron_2": [
         "Heard you're heading to the castle again. Brave soul.",
-        "The last person who went in never came back. Well... except you.",
+        "The last person who went in never came back. Well, except you.",
     ],
     "tavern_patron_3": [
         "This town hasn't been the same since the BB took over.",
@@ -96,22 +106,22 @@ NPC_DIALOGUE = {
     "child": [
         "Is your son okay? He's my best friend.",
         "I snuck up to the castle wall once. It was scary.",
-        "Bring him back, okay? Promise?",
+        "Bring him back okay? Promise?",
     ],
     "old_man": [
         "In my day, the castle was open to everyone.",
-        "The BB wasn't always like this, you know. Something changed him.",
+        "The BB wasn't always like this. Something changed him.",
         "I've lived in Laphero my whole life. Never seen it this dark.",
-        "Back when I was young, the Starlight Castle actually shone at night.",
+        "Back when I was young, the Starlight Castle shone at night.",
     ],
     "mayor": [
         "Now now, let's not be hasty. The castle provides order.",
         "Violence isn't the answer. Perhaps we can negotiate...",
-        "The sacrifices are... regrettable. But necessary for peace.",
-        "I urge you to reconsider. The BB is a reasonable... entity.",
+        "The sacrifices are regrettable. But necessary for peace.",
+        "I urge you to reconsider. The BB is a reasonable entity.",
     ],
     "guard_1": [
-        "Halt! Nobody leaves Laphero after dark.",
+        "Halt! Nobody leaves Laphero.",
         "Turn back, citizen.",
     ],
     "guard_2": [
@@ -128,13 +138,22 @@ class LapheroTile:
 
 
 class NPC:
-    def __init__(self, x, y, npc_id, color=(200, 180, 140)):
+    def __init__(self, x, y, npc_id, color=(200,180,140)):
         self.rect      = pygame.Rect(x, y, 28, 28)
         self.npc_id    = npc_id
         self.color     = color
         self.dialogue  = NPC_DIALOGUE.get(npc_id, ["..."])
         self.dial_idx  = 0
-        self.talking   = False
+        # Pre-render the name tag surface once
+        self._name_surf = None
+
+    def _get_name_surf(self):
+        if self._name_surf is None:
+            font, _, _ = get_fonts()
+            self._name_surf = font.render(
+                self.npc_id.replace("_"," ").title(),
+                True, (255,255,255))
+        return self._name_surf
 
     def get_next_line(self):
         line = self.dialogue[self.dial_idx]
@@ -142,25 +161,31 @@ class NPC:
         return line
 
     def draw(self, screen, camera):
-        dr = camera.apply(self.rect)
+        dr      = camera.apply(self.rect)
         pygame.draw.rect(screen, self.color, dr, border_radius=4)
-        # Name tag
-        font = pygame.font.SysFont(None, 18)
-        tag  = font.render(self.npc_id.replace("_", " ").title(),
-                           True, (255, 255, 255))
-        screen.blit(tag, (dr.x - tag.get_width()//2 + 14,
-                          dr.y - 16))
+        tag     = self._get_name_surf()
+        screen.blit(tag, (
+            dr.centerx - tag.get_width()//2,
+            dr.y - 16))
 
 
 class Guard(NPC):
     def __init__(self, x, y, guard_id, power_mult=1.0):
-        super().__init__(x, y, guard_id, color=(150, 150, 180))
-        self.max_health  = int(10 * power_mult)
-        self.health      = self.max_health
-        self.damage      = max(1, int(2 * power_mult))
-        self.active      = True
+        super().__init__(x, y, guard_id, color=(150,150,180))
+        self.max_health   = int(10 * power_mult)
+        self.health       = self.max_health
+        self.damage       = max(1, int(2 * power_mult))
+        self.active       = True
         self.attack_timer = 0
-        self.rect        = pygame.Rect(x, y, 32, 32)
+        self.rect         = pygame.Rect(x, y, 32, 32)
+        self._label_surf  = None
+
+    def _get_label_surf(self):
+        if self._label_surf is None:
+            font, _, _ = get_fonts()
+            self._label_surf = font.render(
+                "Guard", True, (255,255,255))
+        return self._label_surf
 
     def update(self, player):
         if not self.active:
@@ -169,11 +194,9 @@ class Guard(NPC):
         dy   = player.rect.centery - self.rect.centery
         dist = max(1, (dx*dx + dy*dy)**0.5)
         if dist < 200:
-            # Move toward player
             speed = 2
             self.rect.x += int((dx/dist) * speed)
             self.rect.y += int((dy/dist) * speed)
-            # Attack
             if dist < 40 and self.attack_timer == 0:
                 player.take_damage(self.damage)
                 self.attack_timer = 60
@@ -195,245 +218,117 @@ class Guard(NPC):
     def draw(self, screen, camera):
         if not self.active:
             return
-        dr = camera.apply(self.rect)
-        pygame.draw.rect(screen, self.color, dr, border_radius=4)
-        # Health bar
+        dr    = camera.apply(self.rect)
         ratio = self.health / self.max_health
-        pygame.draw.rect(screen, (80,80,80),   (dr.x, dr.y-8, 32, 5))
-        pygame.draw.rect(screen, (200,50,50),  (dr.x, dr.y-8,
-                                                int(32*ratio), 5))
-        font = pygame.font.SysFont(None, 18)
-        tag  = font.render("Guard", True, (255,255,255))
-        screen.blit(tag, (dr.x, dr.y - 20))
+        pygame.draw.rect(screen, self.color, dr, border_radius=4)
+        pygame.draw.rect(screen, (80,80,80),
+            (dr.x, dr.y-8, 32, 5))
+        pygame.draw.rect(screen, (200,50,50),
+            (dr.x, dr.y-8, int(32*ratio), 5))
+        tag = self._get_label_surf()
+        screen.blit(tag, (
+            dr.centerx - tag.get_width()//2,
+            dr.y - 20))
 
 
-class Laphero:
-    """
-    Hand-crafted top-down town of Laphero.
-    Player starts inside the hero's home and walks out.
-    """
-    def __init__(self, power_mult=1.0):
-        self.tile_size  = TILE_SIZE
-        self.width      = 32
-        self.height     = 28
-        self.x          = 1000
-        self.y          = 1000
-        self.tiles      = []
-        self.surface    = None
-        self.npcs       = []
-        self.guards     = []
-        self.power_mult = power_mult
-        self.gate_open  = False
-        self.completed  = False   # True when player reaches graveyard gate
+def build_surface(tiles, width, height):
+    pw   = width  * TILE_SIZE
+    ph   = height * TILE_SIZE
+    surf = pygame.Surface((pw, ph))
+    color_map = {
+        STONE:  (STONE_COLOR,  STONE_LINE_COLOR),
+        GRASS:  (GRASS_COLOR,  GRASS_LINE_COLOR),
+        WOOD:   (WOOD_COLOR,   WOOD_LINE_COLOR),
+        WALL:   (WALL_COLOR,   WALL_LINE_COLOR),
+        DOOR:   (DOOR_COLOR,   DOOR_COLOR),
+        GATE:   (GATE_COLOR,   GATE_COLOR),
+        RITUAL: (RITUAL_COLOR, RITUAL_COLOR),
+        EMPTY:  (EMPTY_COLOR,  EMPTY_COLOR),
+    }
+    for row_idx, row in enumerate(tiles):
+        for col_idx, tile in enumerate(row):
+            fill, line = color_map.get(
+                tile.tile_type, (GRASS_COLOR, GRASS_LINE_COLOR))
+            rect = pygame.Rect(
+                col_idx * TILE_SIZE,
+                row_idx * TILE_SIZE,
+                TILE_SIZE, TILE_SIZE)
+            pygame.draw.rect(surf, fill, rect)
+            pygame.draw.rect(surf, line, rect, 1)
 
-        # Dialogue state
-        self.active_dialogue  = None
-        self.dialogue_timer   = 0
+            if tile.tile_type == RITUAL:
+                cx = col_idx * TILE_SIZE + TILE_SIZE // 2
+                cy = row_idx * TILE_SIZE + TILE_SIZE // 2
+                pygame.draw.circle(surf,(150,50,255),(cx,cy),28,3)
+                pygame.draw.circle(surf,(100,0,200), (cx,cy),16,2)
+                for angle in range(0, 360, 60):
+                    rx = cx + int(22*math.cos(math.radians(angle)))
+                    ry = cy + int(22*math.sin(math.radians(angle)))
+                    pygame.draw.circle(surf,(180,80,255),(rx,ry),4)
+    return surf
 
-        self.build_layout()
-        self.build_surface()
-        self.place_npcs()
 
-    # ── layout ────────────────────────────────────────────────────────
-    def build_layout(self):
-        """
-        Town layout key:
-        S = stone path     D = dirt path
-        G = grass          W = wall (building)
-        O = wood floor     A = door
-        T = gate           R = ritual circle
-        ~ = water          E = empty/border
-        """
-        layout = [
-            "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",  # 0
-            "EGGGGGGGGGGGGGGGGGGGGGGGGGGGGGE",   # 1
-            "EGGGGGGGGGGGGGGGGGGGGGGGGGGGGGE",   # 2
-            "EGGSSSSSSSSSSSSSSSSSSSSSSSGGGE",    # 3  north road
-            "EGGSWWWAWWWSSSSSSWWWAWWWSGGGE",    # 4  wizard+library
-            "EGGSWOOOOOWSSSSSSWOOOOOWSGGGE",    # 5
-            "EGGSWOOOOOWSSSSSSWOOOOOWSGGGE",    # 6
-            "EGGSWWWWWWWSSSSSSWWWWWWWSGGGE",    # 7
-            "EGGSSSSSSSSSSSSSSSSSSSSSSSGGGE",    # 8  mid road
-            "EGGSWWWAWWWSSSSSSWWWWWWWSGGGE",    # 9  tavern+blacksmith
-            "EGGSWOOOOOWSSSSSSWOOOOOWSGGGE",    # 10
-            "EGGSWOOOOOWSSSSSSWOOOOOWSGGGE",    # 11
-            "EGGSWWWWWWWSSSSSSWWWAWWWSGGGE",    # 12
-            "EGGSSSSSSSSSSSSSSSSSSSSSSSGGGE",    # 13 mid road
-            "EGGSWWWAWWWSSSSSSSSSSSSSSGGGE",    # 14 store
-            "EGGSWOOOOOWSSSSSSSSSSSSSSGGGE",    # 15
-            "EGGSWOOOOOWSSSSSSSSSSSSSSGGGE",    # 16
-            "EGGSWWWWWWWSSSSSSSSSSSSSSGGGE",    # 17
-            "EGGSSSSSSSSSSSSSSSSSSSSSSSGGGE",    # 18 south road
-            "EGGSWWWAWWWSSSSSSSWWWAWWWSGGGE",   # 19 home+shop
-            "EGGSWOORROWSSSSSSSWOOOOOWSGGGE",   # 20 ritual circle
-            "EGGSWOOOOOWSSSSSSSWOOOOOWSGGGE",   # 21
-            "EGGSWWWWWWWSSSSSSSWWWWWWWSGGGE",   # 22
-            "EGGSSSSSSSSSSSSSSSSSSSSSSSGGGE",    # 23 south road
-            "EGGGGGGGSSSSSTTTSSSSGGGGGGGGE",    # 24 gate row
-            "EEEEEEEESSSSSSSSSSSEEEEEEEEEE",    # 25 outside gate
-            "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",  # 26
-            "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",  # 27
-        ]
+def parse_layout(layout, ox, oy):
+    char_map = {
+        "S": STONE, "G": GRASS, "W": WALL,
+        "O": WOOD,  "A": DOOR,  "T": GATE,
+        "R": RITUAL,"E": EMPTY,
+    }
+    cleaned = []
+    for row in layout:
+        cleaned.append(row.replace(" ", ""))
+    height = len(cleaned)
+    width  = max(len(r) for r in cleaned)
+    for i in range(len(cleaned)):
+        cleaned[i] = (cleaned[i] + "E" * width)[:width]
+    tiles = []
+    for row in cleaned:
+        tile_row = []
+        for ch in row:
+            tile_row.append(LapheroTile(char_map.get(ch, EMPTY)))
+        tiles.append(tile_row)
+    return tiles, width, height
 
-        cleaned = []
-        for row in layout:
-            row = row.replace(" ", "")
-            row = (row + "E" * self.width)[:self.width]
-            cleaned.append(row)
 
-        self.tiles = []
-        char_map = {
-            "S": STONE, "D": DIRT,  "G": GRASS,
-            "W": WALL,  "O": WOOD,  "A": DOOR,
-            "T": GATE,  "R": RITUAL,"~": WATER,
-            "E": EMPTY
-        }
-        for row_idx, row in enumerate(cleaned):
-            tile_row = []
-            for col_idx, ch in enumerate(row):
-                tile_row.append(
-                    LapheroTile(char_map.get(ch, EMPTY)))
-            self.tiles.append(tile_row)
+def get_wall_rects_from_tiles(tiles, ox, oy):
+    walls = []
+    for row_idx, row in enumerate(tiles):
+        for col_idx, tile in enumerate(row):
+            if not tile.walkable:
+                walls.append(pygame.Rect(
+                    ox + col_idx * TILE_SIZE,
+                    oy + row_idx * TILE_SIZE,
+                    TILE_SIZE, TILE_SIZE))
+    return walls
 
-        # Player starts just inside the hero's home door (row 19 col 9)
-        self.player_start = (
-            self.x + 9 * TILE_SIZE + TILE_SIZE // 2,
-            self.y + 21 * TILE_SIZE
-        )
 
-        # Gate exit position
-        self.gate_exit = (
-            self.x + 15 * TILE_SIZE,
-            self.y + 25 * TILE_SIZE
-        )
+class LapheroRoom:
+    def __init__(self, room_id, layout, npc_list, ox, oy):
+        self.room_id = room_id
+        self.ox      = ox
+        self.oy      = oy
+        self.tiles, self.width, self.height = \
+            parse_layout(layout, ox, oy)
+        self.surface = build_surface(
+            self.tiles, self.width, self.height)
+        self.npcs    = []
+        # Pre-compute wall rects once
+        self.walls   = get_wall_rects_from_tiles(
+            self.tiles, ox, oy)
 
-    def get_wall_rects(self):
-        walls = []
-        for row_idx, row in enumerate(self.tiles):
-            for col_idx, tile in enumerate(row):
-                if not tile.walkable:
-                    walls.append(pygame.Rect(
-                        self.x + col_idx * TILE_SIZE,
-                        self.y + row_idx * TILE_SIZE,
-                        TILE_SIZE, TILE_SIZE))
-        return walls
-
-    def get_gate_rect(self):
-        return pygame.Rect(
-            self.x + 13 * TILE_SIZE,
-            self.y + 24 * TILE_SIZE,
-            TILE_SIZE * 4, TILE_SIZE * 2)
-
-    # ── NPC placement ─────────────────────────────────────────────────
-    def place_npcs(self):
-        self.npcs   = []
-        self.guards = []
-
-        def npc(col, row, npc_id, color=(200,180,140)):
-            nx = self.x + col * TILE_SIZE + TILE_SIZE // 4
-            ny = self.y + row * TILE_SIZE + TILE_SIZE // 4
+        for entry in npc_list:
+            col, row, npc_id = entry[:3]
+            color = entry[3] if len(entry) > 3 else (200,180,140)
+            nx = ox + col * TILE_SIZE + TILE_SIZE // 4
+            ny = oy + row * TILE_SIZE + TILE_SIZE // 4
             self.npcs.append(NPC(nx, ny, npc_id, color))
 
-        def guard(col, row, gid):
-            gx = self.x + col * TILE_SIZE + TILE_SIZE // 4
-            gy = self.y + row * TILE_SIZE + TILE_SIZE // 4
-            self.guards.append(
-                Guard(gx, gy, gid, self.power_mult))
+        # Pre-render door label surfaces
+        self._door_label_surfs = {}
 
-        # Friend — inside hero's home near ritual circle
-        npc(10, 20, "friend", (100, 180, 255))
+    def pixel_w(self): return self.width  * TILE_SIZE
+    def pixel_h(self): return self.height * TILE_SIZE
 
-        # Wizard — inside wizard tower (top left building row 4-7)
-        npc(4,  6,  "wizard", (150, 100, 255))
-
-        # Library — top right building row 4-7
-        npc(21, 6,  "librarian", (200, 200, 150))
-
-        # Tavern — left building row 9-12
-        npc(4,  10, "innkeeper",     (220, 160, 80))
-        npc(3,  11, "tavern_patron_1",(180,140,100))
-        npc(5,  11, "tavern_patron_2",(190,150,110))
-        npc(3,  10, "tavern_patron_3",(170,130, 90))
-        npc(5,  10, "tavern_patron_4",(185,145,105))
-
-        # Blacksmith — right building row 9-12
-        npc(21, 10, "blacksmith", (160, 120, 80))
-
-        # Store — left building row 14-17
-        npc(4,  15, "shopkeeper",     (80, 200, 120))
-        npc(3,  16, "shop_customer_1",(190,160,130))
-        npc(5,  16, "shop_customer_2",(195,165,135))
-
-        # Town square NPCs — center area
-        npc(14, 13, "child",   (220, 200, 150))
-        npc(15, 13, "old_man", (160, 150, 140))
-        npc(14, 8,  "mayor",   (180, 160, 200))
-
-        # Guards at gate
-        guard(13, 24, "guard_1")
-        guard(16, 24, "guard_2")
-
-    # ── surface ───────────────────────────────────────────────────────
-    def build_surface(self):
-        pw = self.width  * TILE_SIZE
-        ph = self.height * TILE_SIZE
-        self.surface = pygame.Surface((pw, ph))
-
-        color_map = {
-            STONE:  (STONE_COLOR,  STONE_LINE_COLOR),
-            DIRT:   (DIRT_COLOR,   DIRT_LINE_COLOR),
-            GRASS:  (GRASS_COLOR,  GRASS_LINE_COLOR),
-            WOOD:   (WOOD_COLOR,   WOOD_LINE_COLOR),
-            WATER:  (WATER_COLOR,  WATER_LINE_COLOR),
-            WALL:   (WALL_COLOR,   WALL_LINE_COLOR),
-            DOOR:   (DOOR_COLOR,   DOOR_COLOR),
-            GATE:   (GATE_COLOR,   GATE_COLOR),
-            RITUAL: (RITUAL_COLOR, RITUAL_COLOR),
-            EMPTY:  ((10,10,10),   (10,10,10)),
-        }
-
-        for row_idx, row in enumerate(self.tiles):
-            for col_idx, tile in enumerate(row):
-                fill, line = color_map.get(
-                    tile.tile_type, (GRASS_COLOR, GRASS_LINE_COLOR))
-                rect = pygame.Rect(
-                    col_idx * TILE_SIZE,
-                    row_idx * TILE_SIZE,
-                    TILE_SIZE, TILE_SIZE)
-                pygame.draw.rect(self.surface, fill, rect)
-                pygame.draw.rect(self.surface, line, rect, 1)
-
-                # Ritual circle decoration
-                if tile.tile_type == RITUAL:
-                    cx = col_idx * TILE_SIZE + TILE_SIZE // 2
-                    cy = row_idx * TILE_SIZE + TILE_SIZE // 2
-                    pygame.draw.circle(
-                        self.surface, (150, 50, 255),
-                        (cx, cy), 28, 3)
-                    pygame.draw.circle(
-                        self.surface, (100, 0, 200),
-                        (cx, cy), 16, 2)
-                    # Rune marks
-                    for angle in range(0, 360, 60):
-                        import math
-                        rx = cx + int(22 * math.cos(
-                            math.radians(angle)))
-                        ry = cy + int(22 * math.sin(
-                            math.radians(angle)))
-                        pygame.draw.circle(
-                            self.surface, (180, 80, 255),
-                            (rx, ry), 4)
-
-                # Gate decoration
-                if tile.tile_type == GATE:
-                    pygame.draw.rect(
-                        self.surface, (100, 80, 50),
-                        (col_idx * TILE_SIZE + 4,
-                         row_idx * TILE_SIZE + 4,
-                         TILE_SIZE - 8,
-                         TILE_SIZE - 8), 3)
-
-    # ── interaction ───────────────────────────────────────────────────
     def get_nearby_npc(self, player, radius=80):
         for npc in self.npcs:
             dx = npc.rect.centerx - player.rect.centerx
@@ -442,99 +337,324 @@ class Laphero:
                 return npc
         return None
 
+    def draw(self, screen, camera):
+        dp = camera.apply(pygame.Rect(
+            self.ox, self.oy, self.pixel_w(), self.pixel_h()))
+        screen.blit(self.surface, dp.topleft)
+        for npc in self.npcs:
+            npc.draw(screen, camera)
+
+
+class Laphero:
+    OX = 2000
+    OY = 2000
+
+    def __init__(self, power_mult=1.0):
+        self.power_mult      = power_mult
+        self.rooms           = {}
+        self.current_room_id = "exterior"
+        self.guards          = []
+        self.gate_open       = False
+        self.completed       = False
+        self.active_dialogue = None
+        self.dialogue_timer  = 0
+
+        self._build_rooms()
+        self._place_guards()
+        self._build_triggers()
+
+        self.player_start = (
+            self.OX + 16 * TILE_SIZE,
+            self.OY + 11 * TILE_SIZE
+        )
+
+        # Pre-render all overlay surfaces
+        self._pre_render_overlays()
+
+    def _pre_render_overlays(self):
+        """Pre-render gate labels and door labels."""
+        _, med, _ = get_fonts()
+        self._gate_open_surf    = med.render(
+            "OPEN", True, (100,200,100))
+        self._gate_closed_surf  = med.render(
+            "GUARDED — Fight or Sneak!", True, (200,50,50))
+
+        _, small, _ = get_fonts()
+        door_names = [
+            "Wizard's Tower", "Library",
+            "Tavern",         "Blacksmith",
+            "Store",          "Hero's Home",
+        ]
+        self._door_label_surfs = []
+        for name in door_names:
+            self._door_label_surfs.append(
+                med.render(name, True, DOOR_COLOR))
+
+        # Pre-render dialogue box background
+        self._dialogue_bg = pygame.Surface((700, 70), pygame.SRCALPHA)
+        self._dialogue_bg.fill((20,20,40,230))
+        pygame.draw.rect(self._dialogue_bg, (100,100,160),
+            (0, 0, 700, 70), 2, border_radius=8)
+
+    def _build_rooms(self):
+        ox = self.OX
+        oy = self.OY
+
+        ext_layout = [
+            "EEEEEEEEEEEEEEEEEEEEEEE",
+            "EGGGGGGGGGGGGGGGGGGGGGE",
+            "EGSSSSSSSSSSSSSSSSSSGGE",
+            "EGSWWWAWWWSSSSSWWWAWWGE",
+            "EGSWWWWWWWSSSSSWWWWWWGE",
+            "EGSSSSSSSSSSSSSSSSSSGGE",
+            "EGSWWWAWWWSSSSSWWWAWWGE",
+            "EGSWWWWWWWSSSSSWWWWWWGE",
+            "EGSSSSSSSSSSSSSSSSSSGGE",
+            "EGSWWWAWWWSSSSSWWWAWWGE",
+            "EGSWWWWWWWSSSSSWWWWWWGE",
+            "EGSSSSSSSSSSSSSSSSSSGGE",
+            "EGGGGGGGSTTTSGGGGGGGGGE",
+            "EEEEEEEESSSSSEEEEEEEEEE",
+            "EEEEEEEEEEEEEEEEEEEEEEE",
+        ]
+        ext_npcs = [
+            (10, 2, "child",   (220,200,150)),
+            (11, 2, "old_man", (160,150,140)),
+            (12, 2, "mayor",   (180,160,200)),
+        ]
+        self.rooms["exterior"] = LapheroRoom(
+            "exterior", ext_layout, ext_npcs, ox, oy)
+
+        home_layout = [
+            "WWWWWWWWW",
+            "WOOOOOOOW",
+            "WOORROOW",
+            "WOOOOOOOW",
+            "WOOOOOOOW",
+            "WWWWAWWWW",
+        ]
+        self.rooms["home"] = LapheroRoom("home", home_layout,
+            [(3, 2, "friend", (100,180,255))], ox, oy)
+
+        wizard_layout = [
+            "WWWWWWWWW",
+            "WOOOOOOOW",
+            "WOOOOOOOW",
+            "WOOOOOOOW",
+            "WOOOOOOOW",
+            "WWWWAWWWW",
+        ]
+        self.rooms["wizard"] = LapheroRoom("wizard", wizard_layout,
+            [(4, 2, "wizard", (150,100,255))], ox, oy)
+
+        library_layout = [
+            "WWWWWWWWWWW",
+            "WOOOOOOOOOW",
+            "WOOOOOOOOOW",
+            "WOOOOOOOOOW",
+            "WOOOOOOOOOW",
+            "WWWWWAWWWWW",
+        ]
+        self.rooms["library"] = LapheroRoom("library", library_layout,
+            [(5, 2, "librarian", (200,200,150))], ox, oy)
+
+        tavern_layout = [
+            "WWWWWWWWWWWWW",
+            "WOOOOOOOOOOOW",
+            "WOOOOOOOOOOOW",
+            "WOOOOOOOOOOOW",
+            "WOOOOOOOOOOOW",
+            "WWWWWAWWWWWWW",
+        ]
+        self.rooms["tavern"] = LapheroRoom("tavern", tavern_layout, [
+            (4,  2, "innkeeper",      (220,160,80)),
+            (2,  3, "tavern_patron_1",(180,140,100)),
+            (6,  3, "tavern_patron_2",(190,150,110)),
+            (2,  2, "tavern_patron_3",(170,130,90)),
+            (8,  2, "tavern_patron_4",(185,145,105)),
+        ], ox, oy)
+
+        blacksmith_layout = [
+            "WWWWWWWWWWW",
+            "WOOOOOOOOOW",
+            "WOOOOOOOOOW",
+            "WOOOOOOOOOW",
+            "WOOOOOOOOOW",
+            "WWWWWAWWWWW",
+        ]
+        self.rooms["blacksmith"] = LapheroRoom(
+            "blacksmith", blacksmith_layout,
+            [(5, 2, "blacksmith", (160,120,80))], ox, oy)
+
+        store_layout = [
+            "WWWWWWWWWWWWW",
+            "WOOOOOOOOOOOW",
+            "WOOOOOOOOOOOW",
+            "WOOOOOOOOOOOW",
+            "WOOOOOOOOOOOW",
+            "WWWWWAWWWWWWW",
+        ]
+        self.rooms["store"] = LapheroRoom("store", store_layout, [
+            (4,  2, "shopkeeper",     (80,200,120)),
+            (2,  3, "shop_customer_1",(190,160,130)),
+            (7,  3, "shop_customer_2",(195,165,135)),
+        ], ox, oy)
+
+    def _build_triggers(self):
+        ox = self.OX
+        oy = self.OY
+        T  = TILE_SIZE
+
+        self.door_triggers = [
+            (pygame.Rect(ox+6*T,  oy+3*T, T, T), "wizard"),
+            (pygame.Rect(ox+18*T, oy+3*T, T, T), "library"),
+            (pygame.Rect(ox+6*T,  oy+6*T, T, T), "tavern"),
+            (pygame.Rect(ox+18*T, oy+6*T, T, T), "blacksmith"),
+            (pygame.Rect(ox+6*T,  oy+9*T, T, T), "store"),
+            (pygame.Rect(ox+18*T, oy+9*T, T, T), "home"),
+        ]
+
+        self.exit_spawns = {
+            "wizard":     (ox + 6*T  + T//2, oy + 5*T),
+            "library":    (ox + 15*T + T//2, oy + 5*T),
+            "tavern":     (ox + 6*T  + T//2, oy + 8*T),
+            "blacksmith": (ox + 15*T + T//2, oy + 8*T),
+            "store":      (ox + 6*T  + T//2, oy + 11*T),
+            "home":       (ox + 15*T + T//2, oy + 11*T),
+        }
+
+        # Door label world positions for drawing
+        self._door_label_positions = [
+            (ox+6*T,  oy+3*T),
+            (ox+15*T, oy+3*T),
+            (ox+6*T,  oy+6*T),
+            (ox+15*T, oy+6*T),
+            (ox+6*T,  oy+9*T),
+            (ox+15*T, oy+9*T),
+        ]
+
+        self.gate_trigger = pygame.Rect(
+            ox + 8*T, oy + 12*T, T*4, T)
+
+    def _place_guards(self):
+        ox = self.OX
+        oy = self.OY
+        self.guards = [
+            Guard(ox + 8*TILE_SIZE,  oy + 11*TILE_SIZE,
+                  "guard_1", self.power_mult),
+            Guard(ox + 11*TILE_SIZE, oy + 11*TILE_SIZE,
+                  "guard_2", self.power_mult),
+        ]
+
+    def get_current_room(self):
+        return self.rooms[self.current_room_id]
+
+    def is_exterior(self):
+        return self.current_room_id == "exterior"
+
+    def check_door_transition(self, player):
+        px = player.rect.centerx
+        py = player.rect.centery
+
+        if self.is_exterior():
+            for trigger_rect, dest in self.door_triggers:
+                if trigger_rect.collidepoint(px, py):
+                    return dest, "south"
+            if (self.gate_trigger.collidepoint(px, py) and
+                    (self.gate_open or player.stealthed)):
+                self.completed = True
+        else:
+            room   = self.get_current_room()
+            exit_y = room.oy + (room.height - 1) * TILE_SIZE
+            exit_x_min = room.ox + (room.width//2 - 1) * TILE_SIZE
+            exit_x_max = room.ox + (room.width//2 + 1) * TILE_SIZE
+            if (py >= exit_y and exit_x_min <= px <= exit_x_max):
+                return "exterior", "north"
+
+        return None, None
+
     def try_interact(self, player):
-        """
-        Call when player presses E.
-        Returns dialogue string or None.
-        """
-        npc = self.get_nearby_npc(player)
+        room = self.get_current_room()
+        npc  = room.get_nearby_npc(player)
         if npc:
-            return f"{npc.npc_id.replace('_',' ').title()}: " \
-                   f"{npc.get_next_line()}"
+            name = npc.npc_id.replace("_"," ").title()
+            return f"{name}: {npc.get_next_line()}"
         return None
 
-    def check_gate_exit(self, player):
-        """Returns True if player walks through the open gate."""
-        if self.gate_open:
-            if self.get_gate_rect().collidepoint(
-                    player.rect.centerx, player.rect.centery):
-                self.completed = True
-        return self.completed
+    def show_dialogue(self, text, duration=200):
+        self.active_dialogue = text
+        self.dialogue_timer  = duration
 
-    # ── update ────────────────────────────────────────────────────────
+    def get_spawn_inside(self, room_id):
+        room = self.rooms[room_id]
+        return (room.ox + (room.width  // 2) * TILE_SIZE,
+                room.oy + (room.height - 2)  * TILE_SIZE)
+
+    def get_spawn_outside(self, from_room_id):
+        return self.exit_spawns.get(
+            from_room_id,
+            (self.OX + 10*TILE_SIZE, self.OY + 10*TILE_SIZE))
+
     def update(self, player):
-        walls = self.get_wall_rects()
-        player.walls = walls
+        room         = self.get_current_room()
+        player.walls = room.walls
 
-        # Update guards
-        all_defeated = True
-        for guard in self.guards:
-            if guard.active:
-                all_defeated = False
-                guard.update(player)
-                guard.check_hits(player)
-
-        # Gate opens when both guards are defeated
-        if all_defeated:
-            self.gate_open = True
-
-        self.check_gate_exit(player)
+        if self.is_exterior():
+            all_defeated = all(not g.active for g in self.guards)
+            if all_defeated:
+                self.gate_open = True
+            for guard in self.guards:
+                if guard.active:
+                    guard.update(player)
+                    guard.check_hits(player)
 
         if self.dialogue_timer > 0:
             self.dialogue_timer -= 1
         else:
             self.active_dialogue = None
 
-    # ── draw ─────────────────────────────────────────────────────────
     def draw(self, screen, camera):
-        draw_pos = camera.apply(
-            pygame.Rect(self.x, self.y,
-                        self.width  * TILE_SIZE,
-                        self.height * TILE_SIZE))
-        screen.blit(self.surface, draw_pos.topleft)
+        room = self.get_current_room()
+        room.draw(screen, camera)
 
-        # Gate status
-        gate_rect  = self.get_gate_rect()
-        draw_gate  = camera.apply(gate_rect)
-        font       = pygame.font.SysFont(None, 22)
-        if self.gate_open:
-            pygame.draw.rect(screen, (100,200,100), draw_gate, 3)
-            lbl = font.render("OPEN", True, (100,200,100))
-        else:
-            pygame.draw.rect(screen, (200,50,50), draw_gate, 3)
-            lbl = font.render("GUARDED", True, (200,50,50))
-        screen.blit(lbl, (
-            draw_gate.centerx - lbl.get_width()//2,
-            draw_gate.y - 20))
+        if self.is_exterior():
+            for guard in self.guards:
+                guard.draw(screen, camera)
 
-        # NPCs
-        for npc in self.npcs:
-            npc.draw(screen, camera)
+            # Gate indicator — use pre-rendered surfaces
+            draw_gate = camera.apply(self.gate_trigger)
+            if self.gate_open:
+                pygame.draw.rect(screen,(100,200,100),draw_gate,3)
+                lbl = self._gate_open_surf
+            else:
+                pygame.draw.rect(screen,(200,50,50),draw_gate,3)
+                lbl = self._gate_closed_surf
+            screen.blit(lbl,(
+                draw_gate.centerx - lbl.get_width()//2,
+                draw_gate.y - 22))
 
-        # Guards
-        for guard in self.guards:
-            guard.draw(screen, camera)
+            # Door labels — use pre-rendered surfaces
+            for i, (wx, wy) in enumerate(
+                    self._door_label_positions):
+                dr  = camera.apply(
+                    pygame.Rect(wx, wy, TILE_SIZE, TILE_SIZE))
+                lbl = self._door_label_surfs[i]
+                screen.blit(lbl,(
+                    dr.centerx - lbl.get_width()//2,
+                    dr.y - 18))
 
-        # Active dialogue box
         if self.active_dialogue:
-            self.draw_dialogue(screen, self.active_dialogue)
+            self._draw_dialogue(screen)
 
-    def draw_dialogue(self, screen, text):
+    def _draw_dialogue(self, screen):
         box_w = 700
         box_h = 70
         box_x = screen.get_width()  // 2 - box_w // 2
         box_y = screen.get_height() - box_h - 50
-        pygame.draw.rect(screen, (20,20,40),
-            (box_x, box_y, box_w, box_h),
-            border_radius=8)
-        pygame.draw.rect(screen, (100,100,160),
-            (box_x, box_y, box_w, box_h), 2,
-            border_radius=8)
-        font = pygame.font.SysFont(None, 26)
-        surf = font.render(text, True, (255,255,255))
-        screen.blit(surf, (box_x + 15,
-                           box_y + box_h//2 - surf.get_height()//2))
-
-    def show_dialogue(self, text, duration=180):
-        self.active_dialogue = text
-        self.dialogue_timer  = duration
+        screen.blit(self._dialogue_bg, (box_x, box_y))
+        _, _, large = get_fonts()
+        surf = large.render(
+            self.active_dialogue, True, (255,255,255))
+        screen.blit(surf,(
+            box_x + 15,
+            box_y + box_h//2 - surf.get_height()//2))

@@ -338,7 +338,28 @@ def main():
                 player.handle_input()
                 player.update()
                 camera.update(player)
-                town.update(player)
+
+                # Check door transitions inside Laphero
+                dest, entry_dir = town.check_door_transition(player)
+                if dest and dest != "exterior":
+                    do_fade(screen, clock, fade_in=False)
+                    prev = town.current_room_id
+                    town.current_room_id = dest
+                    sx, sy = town.get_spawn_inside(dest)
+                    player.rect.center = (sx, sy)
+                    player.walls = town.get_current_room().walls
+                    camera.update(player)
+                    do_fade(screen, clock, fade_in=True)
+                elif dest == "exterior" and \
+                        town.current_room_id != "exterior":
+                    do_fade(screen, clock, fade_in=False)
+                    prev = town.current_room_id
+                    town.current_room_id = "exterior"
+                    sx, sy = town.get_spawn_outside(prev)
+                    player.rect.center  = (sx, sy)
+                    player.walls = town.get_current_room().walls
+                    camera.update(player)
+                    do_fade(screen, clock, fade_in=True)
 
                 if town.completed:
                     do_fade(screen, clock, fade_in=False)
@@ -429,6 +450,15 @@ def main():
 
         if game_state == STATE_LAPHERO:
             town.draw(screen, camera)
+            # DEBUG triggers
+            for trigger_rect, dest in town.door_triggers:
+                pygame.draw.rect(screen, (255,0,0),
+                    camera.apply(trigger_rect), 2)
+            sfont = pygame.font.SysFont(None, 20)
+            screen.blit(sfont.render(
+                f"Player: {player.rect.center}  "
+                f"Room: {town.current_room_id}",
+                True, (255,255,0)), (10, 120))
             player.draw(screen, camera)
             player.draw_stealth_radius(screen, camera)
             player.draw_hud(screen)
