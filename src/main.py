@@ -8,6 +8,8 @@ from floor import Floor, reset_scheduler
 from floor_manager import FloorManager
 from collision import get_wall_rects, get_all_walls
 from graveyard import Graveyard
+from laphero import Laphero
+from reward import RewardPopup
 from waypoints import (STAIRCASE, RESCUE, LIBRARY,
     ARMORY, DOJO, STORE, KITCHEN, KENNELS, BOSS,
     TEMPLE_ORAKNOS, TEMPLE_THANGAR, TEMPLE_JERRY,
@@ -26,6 +28,8 @@ RED   = (200, 50, 50)
 GOLD  = (255, 215, 0)
 GREEN = (50, 200, 50)
 
+# --- GAME STATES ---
+STATE_LAPHERO   = "laphero"
 STATE_GRAVEYARD = "graveyard"
 STATE_CASTLE    = "castle"
 
@@ -37,12 +41,12 @@ WAYPOINT_MESSAGES = {
     STORE:           "The Store! Browse the wares...",
     KITCHEN:         "The Kitchen! Something smells good...",
     KENNELS:         "The Kennels! What lurks within...",
-    RESCUE:          "A family member is here! Press E to rescue them.",
-    BOSS:            "A powerful enemy blocks the way to the staircase!",
-    TEMPLE_ORAKNOS:  "Temple of Oraknos — Press E to pray and heal.",
-    TEMPLE_THANGAR:  "Temple of Thangar — Press E to pray and heal.",
-    TEMPLE_JERRY:    "Temple of Jerry — Press E to pray and heal.",
-    TEMPLE_SQUIRREL: "Temple of A Squirrel — Press E to pray and heal.",
+    RESCUE:          "A family member is here! Press E to rescue.",
+    BOSS:            "A powerful enemy blocks the staircase!",
+    TEMPLE_ORAKNOS:  "Temple of Oraknos - Press E to pray and heal.",
+    TEMPLE_THANGAR:  "Temple of Thangar - Press E to pray and heal.",
+    TEMPLE_JERRY:    "Temple of Jerry - Press E to pray and heal.",
+    TEMPLE_SQUIRREL: "Temple of A Squirrel - Press E to pray and heal.",
 }
 
 def spawn_enemies(floor, fm):
@@ -76,9 +80,13 @@ def do_fade(screen, clock, fade_in=True, color=BLACK):
         clock.tick(FPS)
 
 def draw_hud_extras(screen, font, fm):
-    screen.blit(font.render(
-        f"Floor: {fm.current_floor} / 12",
-        True, WHITE), (20, 50))
+    mm_x = SCREEN_WIDTH  - 160 - 20
+    mm_y = SCREEN_HEIGHT - 160 - 20
+    floor_txt = font.render(
+        f"Floor: {fm.current_floor} / 12", True, WHITE)
+    screen.blit(floor_txt, (
+        mm_x + 80 - floor_txt.get_width() // 2,
+        mm_y - 28))
     family_status = [
         ("Son",      fm.family[3]["rescued"]),
         ("Daughter", fm.family[6]["rescued"]),
@@ -88,7 +96,7 @@ def draw_hud_extras(screen, font, fm):
         color = GREEN if is_rescued else (120, 120, 120)
         icon  = "v" if is_rescued else "x"
         screen.blit(font.render(f"{icon} {name}", True, color),
-            (20, 75 + i * 22))
+            (20, 50 + i * 22))
 
 def draw_graveyard_hud(screen, font, graveyard):
     screen.blit(font.render(
@@ -103,8 +111,23 @@ def draw_graveyard_hud(screen, font, graveyard):
             "Defeat all enemies to open the gate!",
             True, (180, 180, 180)), (20, SCREEN_HEIGHT - 55))
 
+def draw_laphero_hud(screen, font, town):
+    if not town.gate_open:
+        screen.blit(font.render(
+            "Defeat the guards to open the gate!",
+            True, (180, 180, 180)),
+            (20, SCREEN_HEIGHT - 55))
+    else:
+        screen.blit(font.render(
+            "The gate is open! Head north to the graveyard.",
+            True, GOLD),
+            (20, SCREEN_HEIGHT - 55))
+    screen.blit(font.render(
+        "E: Talk to NPCs",
+        True, (180, 180, 180)),
+        (20, SCREEN_HEIGHT - 30))
+
 def draw_worship_status(screen, font, player):
-    """Show which god the player currently worships."""
     god = player.stats.worshipped_god
     if god:
         god_data = GODS.get(god, {})
@@ -115,30 +138,14 @@ def draw_worship_status(screen, font, player):
             (20, 310))
 
 def handle_temple_interaction(player, waypoint_type):
-    """
-    Handle E press in a temple.
-    Heals the player and offers god worship.
-    Returns a notification string.
-    """
     god_key  = TEMPLE_GOD_MAP.get(waypoint_type)
     god_data = GODS.get(god_key, {})
     god_name = god_data.get("name", "the deity")
-
-    # Full heal
     player.full_heal()
-
-    # Worship the god
     old_god = player.stats.worshipped_god
     player.stats.worshipped_god = god_key
-
-    # Recalculate class
-    player.stats.determine_class(
-        None,   # No weapon system yet
-        None,   # No armor system yet
-        god_key
-    )
+    player.stats.determine_class(None, None, god_key)
     player.refresh_max_health()
-
     if old_god == god_key:
         return f"You pray to {god_name}. You feel restored!"
     elif old_god:
@@ -149,27 +156,57 @@ def handle_temple_interaction(player, waypoint_type):
         return (f"You pledge yourself to {god_name} "
                 f"and are healed!")
 
+def apply_death_penalties(player, survived_items):
+    """Apply gold and inventory penalties on death."""
+    player.stats.gold = int(player.stats.gold * 0.25)
+    # 99% chance to lose all items
+    if random.random() < 0.99:
+        player.stats.item_bonus = {k: 0 for k in
+                                   player.stats.item_bonus}
+        player.refresh_max_health()
+        return False  # Lost items
+    return True  # Kept items
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption(TITLE)
     clock  = pygame.time.Clock()
 
-    fm = FloorManager()
+    fm     = FloorManager()
+    reward = RewardPopup(SCREEN_WIDTH, SCREEN_HEIGHT)
+    rewarded_rooms = set()
 
-    def new_game():
+    def new_game(kept_items=False):
         fm.reset()
         reset_scheduler()
-        gyard  = Graveyard()
-        ex, ey = gyard.entry_pos
-        pl     = Player(ex, ey)
+        rewarded_rooms.clear()
+
+        # Calculate guard power based on player stats
+        power_mult = 1.0 + (
+            sum(player.stats.base.values()) - 5) * 0.1 \
+            if 'player' in dir() else 1.0
+
+        town   = Laphero(power_mult=power_mult)
+        sx, sy = town.player_start
+        pl     = Player(sx, sy)
         cam    = Camera(SCREEN_WIDTH, SCREEN_HEIGHT)
         cam.update(pl)
+
+        return town, None, None, pl, cam, STATE_LAPHERO
+
+    def enter_graveyard(player, camera):
+        gyard  = Graveyard()
+        ex, ey = gyard.entry_pos
+        player.rect.center = (ex, ey)
+        player.walls = []
+        camera.update(player)
         gyard.spawn_enemies(fm)
-        return gyard, None, pl, cam, STATE_GRAVEYARD
+        return gyard
 
     def enter_castle(player, camera):
         reset_scheduler()
+        rewarded_rooms.clear()
         floor      = Floor(floor_number=fm.current_floor)
         start_room = floor.get_current_room()
         sx, sy     = start_room.get_center()
@@ -182,6 +219,7 @@ def main():
     def next_floor(player, camera):
         if not fm.advance_floor():
             return None
+        rewarded_rooms.clear()
         floor      = Floor(floor_number=fm.current_floor)
         start_room = floor.get_current_room()
         sx, sy     = start_room.get_center()
@@ -191,7 +229,10 @@ def main():
         spawn_enemies(floor, fm)
         return floor
 
-    graveyard, floor, player, camera, game_state = new_game()
+    # Initial game start
+    player = Player(0, 0)   # Temp player for power calc
+    town, graveyard, floor, player, camera, game_state = \
+        new_game()
 
     font     = pygame.font.SysFont(None, 28)
     big_font = pygame.font.SysFont(None, 72)
@@ -210,20 +251,49 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
+            # Reward popup gets first dibs on events
+            if reward.active:
+                reward.handle_event(event)
+                if reward.confirmed:
+                    reward.apply_to_player(player)
+                    player.stats.add_gold(reward.gold_reward)
+                    notification = (
+                        f"Gained {reward.gold_reward} gold and "
+                        f"{reward.selected_card['name']}!")
+                    notification_timer = 240
+                continue
+
             if event.type == pygame.KEYDOWN:
+
+                # Restart on death — back to Laphero
                 if event.key == pygame.K_r and not player.alive:
-                    graveyard, floor, player, camera, game_state = \
-                        new_game()
+                    kept = apply_death_penalties(player, [])
+                    town, graveyard, floor, player, camera, \
+                        game_state = new_game()
+                    if kept:
+                        notification = (
+                            "Your friend: The revival ritual "
+                            "must have brought your belongings back!")
+                        notification_timer = 300
                     notification       = ""
                     last_waypoint_type = None
 
-                if game_state == STATE_CASTLE and floor:
+                if event.key == pygame.K_l and player.alive:
+                    player.toggle_stealth()
 
+                # Laphero interactions
+                if game_state == STATE_LAPHERO:
+                    if event.key == pygame.K_e:
+                        msg = town.try_interact(player)
+                        if msg:
+                            town.show_dialogue(msg, 240)
+
+                # Castle interactions
+                if game_state == STATE_CASTLE and floor:
                     if event.key == pygame.K_e:
                         current_room = floor.get_current_room()
                         from waypoints import WaypointRoom
 
-                        # Advance floor at staircase
                         if (floor.staircase_reached and
                                 isinstance(current_room, WaypointRoom)
                                 and current_room.waypoint_type
@@ -242,7 +312,6 @@ def main():
                                 last_waypoint_type = None
                             do_fade(screen, clock, fade_in=True)
 
-                        # Rescue family
                         elif (isinstance(current_room, WaypointRoom)
                                 and current_room.waypoint_type
                                 == RESCUE):
@@ -252,7 +321,6 @@ def main():
                                     f"You rescued your {name}!"
                                 notification_timer = 300
 
-                        # Temple worship and healing
                         elif (isinstance(current_room, WaypointRoom)
                                 and current_room.waypoint_type
                                 in TEMPLE_TYPES):
@@ -263,9 +331,26 @@ def main():
                             notification_timer = 300
 
         # 2. UPDATE
-        if player.alive and not transitioning:
+        if player.alive and not transitioning and not reward.active:
 
-            if game_state == STATE_GRAVEYARD:
+            # ── LAPHERO ──
+            if game_state == STATE_LAPHERO:
+                player.handle_input()
+                player.update()
+                camera.update(player)
+                town.update(player)
+
+                if town.completed:
+                    do_fade(screen, clock, fade_in=False)
+                    graveyard  = enter_graveyard(player, camera)
+                    game_state = STATE_GRAVEYARD
+                    notification       = \
+                        "You enter the haunted graveyard..."
+                    notification_timer = 240
+                    do_fade(screen, clock, fade_in=True)
+
+            # ── GRAVEYARD ──
+            elif game_state == STATE_GRAVEYARD:
                 player.handle_input()
                 player.update()
                 camera.update(player)
@@ -280,6 +365,7 @@ def main():
                     notification_timer = 240
                     do_fade(screen, clock, fade_in=True)
 
+            # ── CASTLE ──
             elif game_state == STATE_CASTLE and floor:
                 player.handle_input()
                 player.update()
@@ -289,12 +375,24 @@ def main():
                 walls        = get_all_walls(current_room)
                 player.walls = walls
 
+                had_enemies = len(current_room.enemies) > 0
+
                 for enemy in current_room.enemies:
                     enemy.walls = walls
                     enemy.update(player, player_in_room=True)
                     enemy.check_hits(player)
                 current_room.enemies = [
                     e for e in current_room.enemies if e.active]
+
+                # Room reward check
+                from waypoints import WaypointRoom
+                room_id = id(current_room)
+                if (had_enemies and
+                        len(current_room.enemies) == 0 and
+                        room_id not in rewarded_rooms and
+                        not isinstance(current_room, WaypointRoom)):
+                    rewarded_rooms.add(room_id)
+                    reward.show()
 
                 neighbor, entry_dir = \
                     floor.check_door_transition(player)
@@ -329,9 +427,17 @@ def main():
         # 3. DRAW
         screen.fill(BLACK)
 
-        if game_state == STATE_GRAVEYARD:
+        if game_state == STATE_LAPHERO:
+            town.draw(screen, camera)
+            player.draw(screen, camera)
+            player.draw_stealth_radius(screen, camera)
+            player.draw_hud(screen)
+            draw_laphero_hud(screen, font, town)
+
+        elif game_state == STATE_GRAVEYARD:
             graveyard.draw(screen, camera)
             player.draw(screen, camera)
+            player.draw_stealth_radius(screen, camera)
             player.draw_hud(screen)
             draw_graveyard_hud(screen, font, graveyard)
 
@@ -341,12 +447,16 @@ def main():
             for enemy in current_room.enemies:
                 enemy.draw(screen, camera)
             player.draw(screen, camera)
+            player.draw_stealth_radius(screen, camera)
             player.draw_hud(screen)
             floor.draw_minimap(screen, player)
             draw_hud_extras(screen, font, fm)
             draw_worship_status(screen, font, player)
 
-        if notification:
+        # Reward popup on top
+        reward.draw(screen)
+
+        if notification and not reward.active:
             notif = med_font.render(notification, True, GOLD)
             screen.blit(notif, (
                 SCREEN_WIDTH//2 - notif.get_width()//2,
@@ -359,7 +469,7 @@ def main():
 
         screen.blit(font.render(
             "WASD: Move  |  J: Sword  |  K: Shoot"
-            "  |  E: Interact  |  R: Restart",
+            "  |  L: Stealth  |  E: Interact  |  R: Restart",
             True, (180, 180, 180)),
             (10, SCREEN_HEIGHT - 30))
 
@@ -369,7 +479,8 @@ def main():
             overlay.fill((0, 0, 0, 150))
             screen.blit(overlay, (0, 0))
             game_over = big_font.render("YOU DIED", True, RED)
-            restart   = font.render("Press R to restart", True, WHITE)
+            restart   = font.render(
+                "Press R to return to Laphero", True, WHITE)
             screen.blit(game_over,
                 (SCREEN_WIDTH//2 - game_over.get_width()//2,
                  SCREEN_HEIGHT//2 - 60))

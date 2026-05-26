@@ -5,10 +5,10 @@ from stats import PlayerStats
 
 # --- CONSTANTS ---
 PLAYER_SIZE          = 32
-PLAYER_COLOR         = (0, 200, 255)
 ATTACK_COOLDOWN_BASE = 15
 SHOOT_COOLDOWN_BASE  = 20
 INVINCIBILITY_FRAMES = 90
+STEALTH_RADIUS       = 300   # Pixels — only affects enemies within this range
 
 
 class Player:
@@ -34,6 +34,11 @@ class Player:
         self.projectiles = []
         self.walls       = []
 
+        # Stealth
+        self.stealthed        = False
+        self.stealth_radius   = STEALTH_RADIUS
+        self.stealth_timer    = 0   # Visual pulse timer
+
     # ── stat-derived values ───────────────────────────────────────────
     @property
     def speed(self):
@@ -45,12 +50,17 @@ class Player:
 
     @property
     def detection_reduction(self):
-        return self.stats.get_detection_reduction()
+        # Only applies when stealthed
+        if self.stealthed:
+            return self.stats.get_detection_reduction()
+        return 0
 
     # ── health ────────────────────────────────────────────────────────
     def take_damage(self, amount):
         if self.invincibility_timer == 0 and self.alive:
-            self.health -= amount
+            # Taking damage breaks stealth
+            self.stealthed = False
+            self.health   -= amount
             self.invincibility_timer = INVINCIBILITY_FRAMES
             if self.health <= 0:
                 self.health = 0
@@ -66,12 +76,27 @@ class Player:
         self.stats.restore_mana()
 
     def refresh_max_health(self):
-        """Call after equipping items to update max health."""
         new_max = self.stats.get_max_health()
         diff    = new_max - self.max_health
         self.max_health = new_max
         if diff > 0:
             self.health = min(self.health + diff, self.max_health)
+
+    # ── stealth ───────────────────────────────────────────────────────
+    def toggle_stealth(self):
+        if not self.stealthed:
+            # Only activate if we have mana
+            if self.stats.mana > 0:
+                self.stealthed = True
+        else:
+            self.stealthed = False
+
+    def is_enemy_in_stealth_range(self, enemy):
+        """Returns True if this enemy is close enough to be affected."""
+        dx   = enemy.rect.centerx - self.rect.centerx
+        dy   = enemy.rect.centery - self.rect.centery
+        dist = (dx * dx + dy * dy) ** 0.5
+        return dist <= self.stealth_radius
 
     # ── input ─────────────────────────────────────────────────────────
     def handle_input(self):
@@ -101,12 +126,16 @@ class Player:
             self.sword        = SwordAttack(self.rect, self.direction,
                                             damage=self.melee_damage)
             self.attack_timer = ATTACK_COOLDOWN_BASE
+            # Attacking breaks stealth
+            self.stealthed    = False
 
         if keys[pygame.K_k] and self.shoot_timer == 0:
             self.projectiles.append(
                 Projectile(self.rect.centerx, self.rect.centery,
                            self.direction))
             self.shoot_timer = SHOOT_COOLDOWN_BASE
+            # Attacking breaks stealth
+            self.stealthed   = False
 
     # ── update ────────────────────────────────────────────────────────
     def update(self):
@@ -114,7 +143,13 @@ class Player:
         if self.shoot_timer         > 0: self.shoot_timer         -= 1
         if self.invincibility_timer > 0: self.invincibility_timer -= 1
 
-        # Mana regeneration
+        # Stealth timer for visual pulse only
+        if self.stealthed:
+            self.stealth_timer += 1
+        else:
+            self.stealth_timer = 0
+
+        # Mana always regenerates
         self.stats.update_mana()
 
         if self.sword and self.sword.active:
@@ -132,11 +167,31 @@ class Player:
         if self.invincibility_timer > 0 and \
                 self.invincibility_timer % 6 < 3:
             color = (255, 255, 255)
+        elif self.stealthed:
+            # Pulse dark blue when stealthed
+            pulse = abs(math.sin(self.stealth_timer * 0.05))
+            r = int(20  * pulse)
+            g = int(80  * pulse)
+            b = int(180 * pulse + 40)
+            color = (r, g, b)
         else:
             cls_color = self.stats.get_class_info()["color"]
             color     = cls_color if self.alive else (100, 100, 100)
 
         pygame.draw.rect(screen, color, draw_rect)
+
+        # Draw stealth radius ring
+        if self.stealthed:
+            pulse_alpha = int(40 + 30 * abs(
+                math.sin(self.stealth_timer * 0.05)))
+            center = (draw_rect.centerx, draw_rect.centery)
+            scaled_radius = int(self.stealth_radius *
+                (screen.get_width() / (camera.width * 2 + 1)))
+            # Draw as a simple circle outline
+            pygame.draw.circle(screen, (50, 100, 200),
+                center,
+                int(self.stealth_radius * 0.15),
+                1)
 
         if self.sword and self.sword.active:
             self.sword.draw(screen, camera)
@@ -178,5 +233,36 @@ class Player:
                 True, (255, 255, 255)),
             (bar_x + 5, bar_y2 + 3))
 
+        # Stealth indicator
+        if self.stealthed:
+            screen.blit(font.render(
+                "STEALTH ACTIVE", True, (50, 100, 220)),
+                (bar_x, bar_y2 + bar_h + 6))
+
         # Stats panel
         self.stats.draw_stats_hud(screen, font)
+
+    def draw_stealth_radius(self, screen, camera):
+        """
+        Draw the stealth radius in world space so it scales
+        correctly with the camera.
+        """
+        if not self.stealthed:
+            return
+        center_world = self.rect.center
+        # Draw 8 points around the radius to approximate a circle
+        import math
+        points = []
+        for i in range(16):
+            angle = (i / 16) * 2 * math.pi
+            wx    = center_world[0] + \
+                    int(math.cos(angle) * self.stealth_radius)
+            wy    = center_world[1] + \
+                    int(math.sin(angle) * self.stealth_radius)
+            draw  = camera.apply(pygame.Rect(wx, wy, 1, 1))
+            points.append((draw.x, draw.y))
+        if len(points) > 2:
+            pygame.draw.polygon(screen, (30, 60, 150), points, 1)
+
+
+import math
