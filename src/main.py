@@ -10,6 +10,9 @@ from collision import get_wall_rects, get_all_walls
 from graveyard import Graveyard
 from laphero import Laphero
 from reward import RewardPopup
+from save_system import (save_game, load_game, delete_save,
+                         save_exists, apply_save)
+from mainmenu import MainMenu, PauseMenu
 from waypoints import (STAIRCASE, RESCUE, LIBRARY,
     ARMORY, DOJO, STORE, KITCHEN, KENNELS, BOSS,
     TEMPLE_ORAKNOS, TEMPLE_THANGAR, TEMPLE_JERRY,
@@ -29,9 +32,11 @@ GOLD  = (255, 215, 0)
 GREEN = (50, 200, 50)
 
 # --- GAME STATES ---
+STATE_MENU      = "menu"
 STATE_LAPHERO   = "laphero"
 STATE_GRAVEYARD = "graveyard"
 STATE_CASTLE    = "castle"
+STATE_PAUSED    = "paused"
 
 WAYPOINT_MESSAGES = {
     STAIRCASE:       "Press E to go to the next floor!",
@@ -114,7 +119,7 @@ def draw_graveyard_hud(screen, font, graveyard):
 def draw_laphero_hud(screen, font, town):
     if not town.gate_open:
         screen.blit(font.render(
-            "Defeat the guards to open the gate!",
+            "Defeat the guards or sneak to open the gate!",
             True, (180, 180, 180)),
             (20, SCREEN_HEIGHT - 55))
     else:
@@ -123,7 +128,7 @@ def draw_laphero_hud(screen, font, town):
             True, GOLD),
             (20, SCREEN_HEIGHT - 55))
     screen.blit(font.render(
-        "E: Talk to NPCs",
+        "E: Talk  |  ESC: Pause",
         True, (180, 180, 180)),
         (20, SCREEN_HEIGHT - 30))
 
@@ -156,16 +161,14 @@ def handle_temple_interaction(player, waypoint_type):
         return (f"You pledge yourself to {god_name} "
                 f"and are healed!")
 
-def apply_death_penalties(player, survived_items):
-    """Apply gold and inventory penalties on death."""
+def apply_death_penalties(player):
     player.stats.gold = int(player.stats.gold * 0.25)
-    # 99% chance to lose all items
     if random.random() < 0.99:
-        player.stats.item_bonus = {k: 0 for k in
-                                   player.stats.item_bonus}
+        player.stats.item_bonus = {
+            k: 0 for k in player.stats.item_bonus}
         player.refresh_max_health()
-        return False  # Lost items
-    return True  # Kept items
+        return False
+    return True
 
 def main():
     pygame.init()
@@ -173,76 +176,108 @@ def main():
     pygame.display.set_caption(TITLE)
     clock  = pygame.time.Clock()
 
-    fm     = FloorManager()
-    reward = RewardPopup(SCREEN_WIDTH, SCREEN_HEIGHT)
+    fm            = FloorManager()
+    reward        = RewardPopup(SCREEN_WIDTH, SCREEN_HEIGHT)
     rewarded_rooms = set()
 
-    def new_game(kept_items=False):
-        fm.reset()
-        reset_scheduler()
-        rewarded_rooms.clear()
+    # --- GAME OBJECT HOLDERS ---
+    town      = None
+    graveyard = None
+    floor     = None
+    player    = Player(0, 0)
+    camera    = Camera(SCREEN_WIDTH, SCREEN_HEIGHT)
 
-        # Calculate guard power based on player stats
-        power_mult = 1.0 + (
-            sum(player.stats.base.values()) - 5) * 0.1 \
-            if 'player' in dir() else 1.0
-
-        town   = Laphero(power_mult=power_mult)
-        sx, sy = town.player_start
-        pl     = Player(sx, sy)
-        cam    = Camera(SCREEN_WIDTH, SCREEN_HEIGHT)
-        cam.update(pl)
-
-        return town, None, None, pl, cam, STATE_LAPHERO
-
-    def enter_graveyard(player, camera):
-        gyard  = Graveyard()
-        ex, ey = gyard.entry_pos
-        player.rect.center = (ex, ey)
-        player.walls = []
-        camera.update(player)
-        gyard.spawn_enemies(fm)
-        return gyard
-
-    def enter_castle(player, camera):
-        reset_scheduler()
-        rewarded_rooms.clear()
-        floor      = Floor(floor_number=fm.current_floor)
-        start_room = floor.get_current_room()
-        sx, sy     = start_room.get_center()
-        player.rect.center = (sx, sy)
-        player.walls = []
-        camera.update(player)
-        spawn_enemies(floor, fm)
-        return floor
-
-    def next_floor(player, camera):
-        if not fm.advance_floor():
-            return None
-        rewarded_rooms.clear()
-        floor      = Floor(floor_number=fm.current_floor)
-        start_room = floor.get_current_room()
-        sx, sy     = start_room.get_center()
-        player.rect.center = (sx, sy)
-        player.walls = []
-        camera.update(player)
-        spawn_enemies(floor, fm)
-        return floor
-
-    # Initial game start
-    player = Player(0, 0)   # Temp player for power calc
-    town, graveyard, floor, player, camera, game_state = \
-        new_game()
-
-    font     = pygame.font.SysFont(None, 28)
-    big_font = pygame.font.SysFont(None, 72)
-    med_font = pygame.font.SysFont(None, 42)
+    prev_state    = None
+    game_state    = STATE_MENU
+    main_menu     = MainMenu(SCREEN_WIDTH, SCREEN_HEIGHT,
+                             save_exists())
+    pause_menu    = None
 
     notification       = ""
     notification_timer = 0
     last_waypoint_type = None
     transitioning      = False
 
+    # --- HELPER FUNCTIONS ---
+    def start_laphero(power_mult=1.0):
+        nonlocal town, player, camera
+        town   = Laphero(power_mult=power_mult)
+        sx, sy = town.player_start
+        player.rect.center = (sx, sy)
+        player.walls = []
+        camera.update(player)
+
+    def start_new_game():
+        nonlocal player, camera, fm
+        fm     = FloorManager()
+        player = Player(0, 0)
+        camera = Camera(SCREEN_WIDTH, SCREEN_HEIGHT)
+        delete_save()
+        start_laphero(power_mult=1.0)
+
+    def load_saved_game():
+        nonlocal player, camera, fm, floor, game_state
+        data = load_game()
+        if data is None:
+            start_new_game()
+            return
+        fm     = FloorManager()
+        player = Player(0, 0)
+        camera = Camera(SCREEN_WIDTH, SCREEN_HEIGHT)
+        apply_save(data, player, fm)
+        # Load back into castle at saved floor
+        reset_scheduler()
+        rewarded_rooms.clear()
+        fl     = Floor(floor_number=fm.current_floor)
+        start_room = fl.get_current_room()
+        sx, sy = start_room.get_center()
+        player.rect.center = (sx, sy)
+        player.walls = []
+        camera.update(player)
+        spawn_enemies(fl, fm)
+        return fl
+
+    def enter_graveyard():
+        nonlocal graveyard
+        gyard  = Graveyard()
+        ex, ey = gyard.entry_pos
+        player.rect.center = (ex, ey)
+        player.walls = []
+        camera.update(player)
+        gyard.spawn_enemies(fm)
+        graveyard = gyard
+
+    def enter_castle():
+        nonlocal floor
+        reset_scheduler()
+        rewarded_rooms.clear()
+        fl         = Floor(floor_number=fm.current_floor)
+        start_room = fl.get_current_room()
+        sx, sy     = start_room.get_center()
+        player.rect.center = (sx, sy)
+        player.walls = []
+        camera.update(player)
+        spawn_enemies(fl, fm)
+        floor = fl
+
+    def go_next_floor():
+        nonlocal floor
+        if not fm.advance_floor():
+            return False
+        rewarded_rooms.clear()
+        fl         = Floor(floor_number=fm.current_floor)
+        start_room = fl.get_current_room()
+        sx, sy     = start_room.get_center()
+        player.rect.center = (sx, sy)
+        player.walls = []
+        camera.update(player)
+        spawn_enemies(fl, fm)
+        floor = fl
+        # Auto-save on floor advance
+        save_game(player, fm)
+        return True
+
+    # --- MAIN LOOP ---
     running = True
     while running:
 
@@ -251,7 +286,44 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
-            # Reward popup gets first dibs on events
+            # --- MAIN MENU ---
+            if game_state == STATE_MENU:
+                main_menu.handle_event(event)
+                if main_menu.done:
+                    if main_menu.choice == "new":
+                        start_new_game()
+                        game_state = STATE_LAPHERO
+                    elif main_menu.choice == "continue":
+                        fl = load_saved_game()
+                        if fl:
+                            floor      = fl
+                            game_state = STATE_CASTLE
+                        else:
+                            game_state = STATE_LAPHERO
+                    elif main_menu.choice == "quit":
+                        running = False
+                continue
+
+            # --- PAUSE MENU ---
+            if game_state == STATE_PAUSED:
+                pause_menu.handle_event(event)
+                if pause_menu.done:
+                    if pause_menu.choice == "resume":
+                        game_state = prev_state
+                    elif pause_menu.choice == "save":
+                        save_game(player, fm)
+                        notification       = "Game saved!"
+                        notification_timer = 180
+                        game_state         = prev_state
+                    elif pause_menu.choice == "quit":
+                        save_game(player, fm)
+                        game_state = STATE_MENU
+                        main_menu  = MainMenu(
+                            SCREEN_WIDTH, SCREEN_HEIGHT,
+                            save_exists())
+                continue
+
+            # Reward popup
             if reward.active:
                 reward.handle_event(event)
                 if reward.confirmed:
@@ -265,51 +337,63 @@ def main():
 
             if event.type == pygame.KEYDOWN:
 
-                # Restart on death — back to Laphero
-                if event.key == pygame.K_r and not player.alive:
-                    kept = apply_death_penalties(player, [])
-                    town, graveyard, floor, player, camera, \
-                        game_state = new_game()
+                # Pause
+                if event.key == pygame.K_ESCAPE and \
+                        game_state not in (STATE_MENU,
+                                           STATE_PAUSED):
+                    prev_state = game_state
+                    game_state = STATE_PAUSED
+                    pause_menu = PauseMenu(
+                        SCREEN_WIDTH, SCREEN_HEIGHT)
+                    continue
+
+                # Restart on death
+                if event.key == pygame.K_r and \
+                        not player.alive:
+                    kept = apply_death_penalties(player)
+                    fm.reset()
+                    start_laphero()
+                    game_state = STATE_LAPHERO
                     if kept:
                         notification = (
                             "Your friend: The revival ritual "
-                            "must have brought your belongings back!")
+                            "must have brought your belongings!")
                         notification_timer = 300
-                    notification       = ""
+                    else:
+                        notification       = ""
                     last_waypoint_type = None
 
                 if event.key == pygame.K_l and player.alive:
                     player.toggle_stealth()
 
-                # Laphero interactions
+                # Laphero
                 if game_state == STATE_LAPHERO:
                     if event.key == pygame.K_e:
                         msg = town.try_interact(player)
                         if msg:
                             town.show_dialogue(msg, 240)
 
-                # Castle interactions
+                # Castle
                 if game_state == STATE_CASTLE and floor:
                     if event.key == pygame.K_e:
                         current_room = floor.get_current_room()
                         from waypoints import WaypointRoom
 
                         if (floor.staircase_reached and
-                                isinstance(current_room, WaypointRoom)
-                                and current_room.waypoint_type
+                                isinstance(current_room,
+                                           WaypointRoom) and
+                                current_room.waypoint_type
                                 == STAIRCASE):
                             do_fade(screen, clock, fade_in=False)
-                            new_fl = next_floor(player, camera)
-                            if new_fl is None:
-                                notification       = \
-                                    "You have reached the top floor!"
-                                notification_timer = 180
-                            else:
-                                floor              = new_fl
+                            if go_next_floor():
                                 notification       = \
                                     f"Floor {fm.current_floor}!"
                                 notification_timer = 180
-                                last_waypoint_type = None
+                            else:
+                                notification       = \
+                                    "You have reached the top floor!"
+                                notification_timer = 180
+                            last_waypoint_type = None
                             do_fade(screen, clock, fade_in=True)
 
                         elif (isinstance(current_room, WaypointRoom)
@@ -331,46 +415,55 @@ def main():
                             notification_timer = 300
 
         # 2. UPDATE
-        if player.alive and not transitioning and not reward.active:
+        if game_state == STATE_MENU:
+            pass  # Menu handles itself
 
-            # ── LAPHERO ──
+        elif game_state == STATE_PAUSED:
+            pass  # Pause menu handles itself
+
+        elif player.alive and not transitioning and \
+                not reward.active:
+
+            # LAPHERO
             if game_state == STATE_LAPHERO:
                 player.handle_input()
                 player.update()
                 camera.update(player)
+                town.update(player)
 
-                # Check door transitions inside Laphero
-                dest, entry_dir = town.check_door_transition(player)
+                dest, entry_dir = \
+                    town.check_door_transition(player)
                 if dest and dest != "exterior":
                     do_fade(screen, clock, fade_in=False)
-                    prev = town.current_room_id
                     town.current_room_id = dest
                     sx, sy = town.get_spawn_inside(dest)
                     player.rect.center = (sx, sy)
-                    player.walls = town.get_current_room().walls
+                    player.walls = \
+                        town.get_current_room().walls
                     camera.update(player)
                     do_fade(screen, clock, fade_in=True)
                 elif dest == "exterior" and \
-                        town.current_room_id != "exterior":
+                        not town.is_exterior():
                     do_fade(screen, clock, fade_in=False)
                     prev = town.current_room_id
                     town.current_room_id = "exterior"
                     sx, sy = town.get_spawn_outside(prev)
                     player.rect.center  = (sx, sy)
-                    player.walls = town.get_current_room().walls
+                    player.walls = \
+                        town.get_current_room().walls
                     camera.update(player)
                     do_fade(screen, clock, fade_in=True)
 
                 if town.completed:
                     do_fade(screen, clock, fade_in=False)
-                    graveyard  = enter_graveyard(player, camera)
-                    game_state = STATE_GRAVEYARD
+                    enter_graveyard()
+                    game_state         = STATE_GRAVEYARD
                     notification       = \
                         "You enter the haunted graveyard..."
                     notification_timer = 240
                     do_fade(screen, clock, fade_in=True)
 
-            # ── GRAVEYARD ──
+            # GRAVEYARD
             elif game_state == STATE_GRAVEYARD:
                 player.handle_input()
                 player.update()
@@ -379,14 +472,14 @@ def main():
 
                 if graveyard.completed:
                     do_fade(screen, clock, fade_in=False)
-                    floor      = enter_castle(player, camera)
-                    game_state = STATE_CASTLE
+                    enter_castle()
+                    game_state         = STATE_CASTLE
                     notification       = \
                         "You enter the Starlight Castle..."
                     notification_timer = 240
                     do_fade(screen, clock, fade_in=True)
 
-            # ── CASTLE ──
+            # CASTLE
             elif game_state == STATE_CASTLE and floor:
                 player.handle_input()
                 player.update()
@@ -405,13 +498,13 @@ def main():
                 current_room.enemies = [
                     e for e in current_room.enemies if e.active]
 
-                # Room reward check
                 from waypoints import WaypointRoom
                 room_id = id(current_room)
                 if (had_enemies and
                         len(current_room.enemies) == 0 and
                         room_id not in rewarded_rooms and
-                        not isinstance(current_room, WaypointRoom)):
+                        not isinstance(current_room,
+                                       WaypointRoom)):
                     rewarded_rooms.add(room_id)
                     reward.show()
 
@@ -448,30 +541,28 @@ def main():
         # 3. DRAW
         screen.fill(BLACK)
 
-        if game_state == STATE_LAPHERO:
+        if game_state == STATE_MENU:
+            main_menu.draw(screen)
+
+        elif game_state in (STATE_LAPHERO, STATE_PAUSED) and \
+                town:
             town.draw(screen, camera)
-            # DEBUG triggers
-            for trigger_rect, dest in town.door_triggers:
-                pygame.draw.rect(screen, (255,0,0),
-                    camera.apply(trigger_rect), 2)
-            sfont = pygame.font.SysFont(None, 20)
-            screen.blit(sfont.render(
-                f"Player: {player.rect.center}  "
-                f"Room: {town.current_room_id}",
-                True, (255,255,0)), (10, 120))
             player.draw(screen, camera)
             player.draw_stealth_radius(screen, camera)
             player.draw_hud(screen)
-            draw_laphero_hud(screen, font, town)
+            draw_laphero_hud(screen, font if 'font' in dir()
+                             else pygame.font.SysFont(None,28),
+                             town)
 
-        elif game_state == STATE_GRAVEYARD:
+        elif game_state in (STATE_GRAVEYARD, STATE_PAUSED) and \
+                graveyard:
             graveyard.draw(screen, camera)
             player.draw(screen, camera)
             player.draw_stealth_radius(screen, camera)
             player.draw_hud(screen)
-            draw_graveyard_hud(screen, font, graveyard)
 
-        elif game_state == STATE_CASTLE and floor:
+        elif game_state in (STATE_CASTLE, STATE_PAUSED) and \
+                floor:
             floor.draw(screen, camera)
             current_room = floor.get_current_room()
             for enemy in current_room.enemies:
@@ -480,34 +571,55 @@ def main():
             player.draw_stealth_radius(screen, camera)
             player.draw_hud(screen)
             floor.draw_minimap(screen, player)
-            draw_hud_extras(screen, font, fm)
-            draw_worship_status(screen, font, player)
 
-        # Reward popup on top
+        # Shared HUD elements
+        if game_state not in (STATE_MENU,):
+            font = pygame.font.SysFont(None, 28)
+
+            if game_state == STATE_GRAVEYARD:
+                draw_graveyard_hud(screen, font, graveyard)
+            elif game_state == STATE_CASTLE and floor:
+                draw_hud_extras(screen, font, fm)
+                draw_worship_status(screen, font, player)
+            elif game_state == STATE_LAPHERO:
+                draw_laphero_hud(screen, font, town)
+
+            fps       = int(clock.get_fps())
+            fps_color = (50,200,50) if fps >= 50 else (200,50,50)
+            screen.blit(
+                font.render(f"FPS: {fps}", True, fps_color),
+                (SCREEN_WIDTH - 80, 20))
+
+            screen.blit(font.render(
+                "WASD: Move  |  J: Sword  |  K: Shoot"
+                "  |  L: Stealth  |  E: Interact"
+                "  |  ESC: Pause",
+                True, (180,180,180)),
+                (10, SCREEN_HEIGHT - 30))
+
+        # Pause menu on top
+        if game_state == STATE_PAUSED and pause_menu:
+            pause_menu.draw(screen)
+
+        # Reward popup
         reward.draw(screen)
 
-        if notification and not reward.active:
-            notif = med_font.render(notification, True, GOLD)
+        if notification and not reward.active and \
+                game_state != STATE_MENU:
+            med_font = pygame.font.SysFont(None, 42)
+            notif    = med_font.render(notification, True, GOLD)
             screen.blit(notif, (
                 SCREEN_WIDTH//2 - notif.get_width()//2,
                 SCREEN_HEIGHT - 100))
 
-        fps       = int(clock.get_fps())
-        fps_color = (50, 200, 50) if fps >= 50 else (200, 50, 50)
-        screen.blit(font.render(f"FPS: {fps}", True, fps_color),
-            (SCREEN_WIDTH - 80, 20))
-
-        screen.blit(font.render(
-            "WASD: Move  |  J: Sword  |  K: Shoot"
-            "  |  L: Stealth  |  E: Interact  |  R: Restart",
-            True, (180, 180, 180)),
-            (10, SCREEN_HEIGHT - 30))
-
-        if not player.alive:
-            overlay = pygame.Surface(
+        if not player.alive and \
+                game_state not in (STATE_MENU, STATE_PAUSED):
+            big_font = pygame.font.SysFont(None, 72)
+            font     = pygame.font.SysFont(None, 28)
+            overlay  = pygame.Surface(
                 (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 150))
-            screen.blit(overlay, (0, 0))
+            overlay.fill((0,0,0,150))
+            screen.blit(overlay, (0,0))
             game_over = big_font.render("YOU DIED", True, RED)
             restart   = font.render(
                 "Press R to return to Laphero", True, WHITE)
@@ -524,7 +636,8 @@ def main():
                         "Rescued: " + ", ".join(rescued),
                         True, GREEN)
                     screen.blit(resc_txt,
-                        (SCREEN_WIDTH//2 - resc_txt.get_width()//2,
+                        (SCREEN_WIDTH//2 -
+                         resc_txt.get_width()//2,
                          SCREEN_HEIGHT//2 + 50))
 
         pygame.display.flip()
